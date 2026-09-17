@@ -1,0 +1,55 @@
+# ======================================================================
+#  Caddy —— 边缘反向代理 + 全自动 HTTPS
+#
+#  它是整个 homelab 唯一对公网开放的入口：
+#    公网 :80/:443  →  Caddy  →  127.0.0.1:<各应用的默认端口>
+#
+#  为什么用 host 网络？
+#    因为其它应用都只监听 127.0.0.1（不对公网暴露），Caddy 必须和它们
+#    共享同一个 loopback 才能转发过去。用 host 网络最省事：
+#    新增应用不用改动任何网络配置，直接在 sites/ 里加个文件就行。
+#
+#  为什么用 latest 标签？
+#    Caddy 是无状态的（配置在文件里、证书在数据卷里），随便升级不会坏，
+#    配合 watchtower 自动更新很香。所以打了 watchtower 的 enable 标签。
+# ======================================================================
+
+name: caddy
+
+services:
+  caddy:
+    image: ${REGISTRY}/library/caddy:${CADDY_TAG}
+    container_name: caddy
+    restart: unless-stopped
+
+    # host 网络：直接使用宿主的网络栈，绑 80/443/2019 三个端口
+    network_mode: host
+
+    environment:
+      # Caddyfile 里用 {$ACME_EMAIL} 引用，用于 ACME 账户 + 到期提醒
+      ACME_EMAIL: ${ACME_EMAIL}
+      TZ: ${TZ}
+
+    volumes:
+      # 主配置：只读挂载，改完执行 bin/hl proxy reload 热加载
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 站点配置目录：一个域名一个 .caddy 文件，被 Caddyfile 用 import 引入
+      - ./sites:/etc/caddy/sites:ro
+      # 证书 + ACME 账户私钥，必须持久化！
+      # 丢了会重新签发，频繁重签会触发 Let's Encrypt 速率限制（每域名每周 5 次）
+      - ./data/caddy_data:/data
+      # Caddy 自动生成的 JSON 配置和缓存
+      - ./data/caddy_config:/config
+
+    healthcheck:
+      # Caddy 的 admin API 默认监听 127.0.0.1:2019，host 网络下可直接探测
+      # 镜像基于 alpine，自带 busybox wget
+      test: ["CMD", "wget", "-qO-", "--timeout=5", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    labels:
+      # 允许 watchtower 自动更新这个容器（无状态，升级安全）
+      com.centurylinklabs.watchtower.enable: "true"

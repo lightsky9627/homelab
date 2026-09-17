@@ -1,0 +1,69 @@
+# ======================================================================
+#  反代站点模板
+#
+#  用法：复制本文件成 <应用名>.caddy，改域名和端口，然后热加载。
+#      cp example.caddy.disabled memos.caddy
+#      vim memos.caddy
+#      bin/hl proxy reload
+#
+#  注意文件名后缀必须是 .caddy 才会被加载（.disabled 的会被忽略，
+#  所以想临时停用某个站点，把它改名成 xxx.caddy.disabled 即可）。
+#
+#  前提：域名的 A/AAAA 记录已经解析到本机公网 IP，且 80/443 端口放行。
+#  Caddy 首次访问该域名时会自动申请证书，之后自动续期，你什么都不用管。
+# ======================================================================
+
+# 把下面的域名改成你自己的
+memos.example.com {
+	# 反代到本机端口。端口号填应用的默认端口，见 PORTS.md
+	#   memos    5230
+	#   vaultwarden 8080
+	import backend 5230
+}
+
+# ---------------------------------------------------------------------
+# 其它常见写法，按需取用：
+# ---------------------------------------------------------------------
+
+# 1) 需要 WebSocket + 大文件上传（第二个参数是上传大小上限）
+# files.example.com {
+# 	import backend_ws 8080 512MB
+# }
+
+# 2) 加上安全响应头
+# vault.example.com {
+# 	import security_headers
+# 	import backend 8080
+# }
+
+# 3) 完全自定义（不用片段，直接写原生指令）
+# app.example.com {
+# 	reverse_proxy 127.0.0.1:3000 {
+# 		header_up X-Real-IP {remote_host}
+# 	}
+# 	# 单独给某个路径放行更大的上传
+# 	handle_path /upload/* {
+# 		request_body {
+# 			max_size 2GB
+# 		}
+# 		reverse_proxy 127.0.0.1:3000
+# 	}
+# }
+
+# 4) 静态文件目录（不反代，直接由 Caddy 提供）
+# static.example.com {
+# 	root * /srv/static
+# 	file_server browse
+# }
+
+# 5) 整站重定向到另一个域名
+# old.example.com {
+# 	redir https://new.example.com{uri} permanent
+# }
+
+# 6) 只允许内网访问（公网返回 403）
+# admin.example.com {
+# 	@external not remote_ip 192.168.0.0/16 10.0.0.0/8 172.16.0.0/12
+# 	respond @external "Forbidden" 403
+# 	import backend 9000
+# }

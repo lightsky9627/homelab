@@ -1,0 +1,495 @@
+#!/usr/bin/env bash
+# ======================================================================
+#  hl —— homelab 统一管理命令
+#
+#  设计原则：所有日常操作一条命令搞定，不用记 docker compose 的参数。
+#
+#  用法总览：
+#    hl up <应用>          启动（自动创建 .env、拉镜像）
+#    hl down <应用>        停止
+#    hl restart <应用>     重启
+#    hl logs <应用>        看日志
+#    hl ps                 列出所有应用状态
+#    hl ports              端口占用总览
+#
+#    hl proxy add <名字> <端口>   加一条反代（自动申请证书）
+#    hl proxy list               列出所有反代
+#    hl proxy reload             热加载 Caddy 配置
+#
+#    hl db create <名字>          在共享 pg 里建库和账号（随机密码）
+#
+#    hl backup init              交互式配置备份
+#    hl backup now [应用]        立即备份
+#    hl backup list [应用]       查看快照列表
+#    hl backup restore           交互式恢复
+#    hl backup stats             空间占用统计
+#
+#  「应用」可以写目录名（memos）或带路径（apps/100-memos），会自动查找。
+# ======================================================================
+
+set -euo pipefail
+
+# 仓库根目录 = 本脚本所在目录的上一级
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+# ---- 终端颜色（不是 tty 时自动禁用，避免日志里出现乱码转义符）----
+if [[ -t 1 ]]; then
+  C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'
+  C_BLU=$'\033[36m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+  C_RED=""; C_GRN=""; C_YEL=""; C_BLU=""; C_DIM=""; C_OFF=""
+fi
+
+info() { echo "${C_BLU}==>${C_OFF} $*"; }
+ok()   { echo "${C_GRN}✓${C_OFF} $*"; }
+warn() { echo "${C_YEL}!${C_OFF} $*" >&2; }
+die()  { echo "${C_RED}✗ 错误:${C_OFF} $*" >&2; exit 1; }
+
+# ======================================================================
+#  工具函数
+# ======================================================================
+
+# 找到应用目录。支持三种写法：
+#   memos              → 模糊匹配目录名
+#   100-memos          → 精确匹配
+#   apps/100-memos     → 直接给路径
+find_app() {
+  local q="${1:-}"
+  [[ -n "$q" ]] || die "请指定应用名"
+
+  # 情况 1：直接就是个存在的目录
+  if [[ -d "$q" && -f "$q/docker-compose.yaml" ]]; then
+    (cd "$q" && pwd); return
+  fi
+
+  # 情况 2/3：在 infra/ apps/ ops/ 下面找匹配的
+  local matches=()
+  local d
+  for d in infra/*/ apps/*/ ops/*/; do
+    [[ -f "${d}docker-compose.yaml" ]] || continue
+    local name; name="$(basename "$d")"
+    # 去掉 NNN- 前缀后的纯名字，例如 100-memos → memos
+    local slug="${name#*-}"
+    if [[ "$name" == "$q" || "$slug" == "$q" ]]; then
+      matches+=("$d")
+    fi
+  done
+
+  case "${#matches[@]}" in
+    1) (cd "${matches[0]}" && pwd) ;;
+    0) die "找不到应用 '$q'。可用的应用：$(list_apps | tr '\n' ' ')" ;;
+    *) die "'$q' 匹配到多个应用：${matches[*]}，请写完整目录名" ;;
+  esac
+}
+
+# 列出所有应用的纯名字
+list_apps() {
+  local d
+  for d in infra/*/ apps/*/ ops/*/; do
+    [[ -f "${d}docker-compose.yaml" ]] || continue
+    basename "$d"
+  done
+}
+
+# 组装 docker compose 命令：
+# --env-file 可以给多次，后面的覆盖前面的，正好实现「全局 .env + 应用 .env」
+compose() {
+  local dir="$1"; shift
+  local args=()
+
+  # 全局环境变量（如果存在）
+  [[ -f "$REPO_ROOT/.env" ]] && args+=(--env-file "$REPO_ROOT/.env")
+  # 应用自己的环境变量
+  [[ -f "$dir/.env" ]] && args+=(--env-file "$dir/.env")
+
+  (cd "$dir" && docker compose "${args[@]}" "$@")
+}
+
+# 确保 .env 存在，不存在就从 .env.example 复制
+ensure_env() {
+  local dir="$1"
+  if [[ ! -f "$dir/.env" && -f "$dir/.env.example" ]]; then
+    cp "$dir/.env.example" "$dir/.env"
+    chmod 600 "$dir/.env"
+    warn "已创建 $(realpath --relative-to="$REPO_ROOT" "$dir")/.env，请先填写里面的 CHANGE_ME 项"
+  fi
+}
+
+# 确保全局 .env 存在
+ensure_root_env() {
+  if [[ ! -f "$REPO_ROOT/.env" ]]; then
+    cp "$REPO_ROOT/.env.example" "$REPO_ROOT/.env"
+    warn "已创建根目录 .env，建议先改 BASE_DOMAIN 和 ACME_EMAIL"
+  fi
+}
+
+# 从 env 文件里读一个变量的值（不 source，避免执行恶意内容）
+read_env() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || return 1
+  # 取最后一次出现的定义，去掉可能的引号
+  sed -n "s/^${key}=//p" "$file" | tail -1 | sed 's/^["'\'']//; s/["'\'']$//'
+}
+
+# 生成随机密码：只用字母数字，避免拼进 URL 时要转义
+gen_pass() { openssl rand -hex 24; }
+
+# ======================================================================
+#  基础命令：up / down / restart / logs / ps / pull
+# ======================================================================
+
+cmd_up() {
+  ensure_root_env
+  local targets=("$@")
+  # 不给参数就启动全部
+  [[ ${#targets[@]} -gt 0 ]] || mapfile -t targets < <(list_apps)
+
+  local t
+  for t in "${targets[@]}"; do
+    local dir; dir="$(find_app "$t")"
+    ensure_env "$dir"
+
+    # 起之前检查有没有没填的占位符
+    if [[ -f "$dir/.env" ]] && grep -q "CHANGE_ME" "$dir/.env"; then
+      warn "$(basename "$dir")/.env 里还有 CHANGE_ME 没填，跳过"
+      continue
+    fi
+
+    info "启动 $(basename "$dir")"
+    compose "$dir" up -d
+    ok "$(basename "$dir") 已启动"
+  done
+}
+
+cmd_down() {
+  local targets=("$@")
+  [[ ${#targets[@]} -gt 0 ]] || mapfile -t targets < <(list_apps)
+  local t
+  for t in "${targets[@]}"; do
+    local dir; dir="$(find_app "$t")"
+    info "停止 $(basename "$dir")"
+    compose "$dir" down
+  done
+}
+
+cmd_restart() {
+  [[ $# -gt 0 ]] || die "请指定要重启的应用"
+  local t
+  for t in "$@"; do
+    local dir; dir="$(find_app "$t")"
+    info "重启 $(basename "$dir")"
+    compose "$dir" restart
+  done
+}
+
+cmd_logs() {
+  [[ $# -gt 0 ]] || die "请指定应用，例如: hl logs memos"
+  local dir; dir="$(find_app "$1")"; shift
+  # 默认跟随输出并只显示最近 100 行
+  compose "$dir" logs -f --tail=100 "$@"
+}
+
+cmd_pull() {
+  local targets=("$@")
+  [[ ${#targets[@]} -gt 0 ]] || mapfile -t targets < <(list_apps)
+  local t
+  for t in "${targets[@]}"; do
+    local dir; dir="$(find_app "$t")"
+    ensure_env "$dir"
+    info "拉取 $(basename "$dir") 的镜像"
+    compose "$dir" pull
+  done
+}
+
+cmd_ps() {
+  printf '%-22s %-10s %s\n' "应用" "状态" "容器"
+  printf '%s\n' "----------------------------------------------------------------"
+  local d
+  for d in infra/*/ apps/*/ ops/*/; do
+    [[ -f "${d}docker-compose.yaml" ]] || continue
+    local name; name="$(basename "$d")"
+    local dir; dir="$(cd "$d" && pwd)"
+
+    # 查这个 compose 项目下正在运行的容器
+    local running
+    running="$(compose "$dir" ps --format '{{.Name}}' 2>/dev/null | tr '\n' ' ' || true)"
+
+    if [[ -n "${running// /}" ]]; then
+      printf '%-22s %s%-10s%s %s\n' "$name" "$C_GRN" "运行中" "$C_OFF" "$running"
+    elif [[ -f "$dir/.env" ]]; then
+      printf '%-22s %s%-10s%s\n' "$name" "$C_DIM" "已停止" "$C_OFF"
+    else
+      printf '%-22s %s%-10s%s %s\n' "$name" "$C_DIM" "未配置" "$C_OFF" "(执行 hl up $name 初始化)"
+    fi
+  done
+}
+
+# 端口总览：从各应用的 .env 里把 *_PORT 变量抽出来
+cmd_ports() {
+  printf '%-22s %-10s %s\n' "应用" "端口" "监听状态"
+  printf '%s\n' "----------------------------------------------------------------"
+  local d
+  for d in infra/*/ apps/*/ ops/*/; do
+    local name; name="$(basename "$d")"
+    local envf="${d}.env"
+    [[ -f "$envf" ]] || envf="${d}.env.example"
+    [[ -f "$envf" ]] || continue
+
+    # 抓形如 XXX_PORT=1234 的行
+    local line port
+    while IFS= read -r line; do
+      port="${line#*=}"
+      [[ "$port" =~ ^[0-9]+$ ]] || continue
+      local state="${C_DIM}未监听${C_OFF}"
+      if ss -ltn 2>/dev/null | grep -qE "[:.]${port}\s"; then
+        state="${C_GRN}监听中${C_OFF}"
+      fi
+      printf '%-22s %-10s %b\n' "$name" "$port" "$state"
+    done < <(grep -E '^[A-Z_]*PORT=[0-9]+' "$envf" 2>/dev/null || true)
+  done
+
+  # Caddy 是 host 网络直接绑 80/443，不走 .env 变量，单独列
+  printf '%-22s %-10s ' "010-caddy" "80,443"
+  if ss -ltn 2>/dev/null | grep -qE '[:.]443\s'; then
+    echo "${C_GRN}监听中${C_OFF}"
+  else
+    echo "${C_DIM}未监听${C_OFF}"
+  fi
+}
+
+# ======================================================================
+#  proxy —— Caddy 反向代理管理
+# ======================================================================
+
+CADDY_DIR="$REPO_ROOT/infra/010-caddy"
+
+cmd_proxy() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    add)    proxy_add "$@" ;;
+    rm|del) proxy_rm "$@" ;;
+    list|ls) proxy_list ;;
+    reload) proxy_reload ;;
+    *) die "用法: hl proxy {add|rm|list|reload}" ;;
+  esac
+}
+
+proxy_add() {
+  local name="${1:-}" port="${2:-}"
+  if [[ -z "$name" || -z "$port" ]]; then
+    die "用法: hl proxy add <名字|域名> <端口>
+例如: hl proxy add memos 5230          → memos.\$BASE_DOMAIN
+      hl proxy add note.abc.com 5230   → 直接用这个域名"
+  fi
+
+  # 名字里带点就当完整域名，否则拼上 BASE_DOMAIN
+  local domain
+  if [[ "$name" == *.* ]]; then
+    domain="$name"
+  else
+    local base; base="$(read_env "$REPO_ROOT/.env" BASE_DOMAIN || echo "example.com")"
+    domain="${name}.${base}"
+  fi
+
+  local file="$CADDY_DIR/sites/${name%%.*}.caddy"
+  if [[ -f "$file" ]]; then
+    warn "$file 已存在，将被覆盖"
+  fi
+
+  mkdir -p "$CADDY_DIR/sites"
+  cat > "$file" <<EOF
+# 由 hl proxy add 生成于 $(date '+%Y-%m-%d %H:%M:%S')
+# 应用: ${name}   后端端口: ${port}
+${domain} {
+	import backend ${port}
+}
+EOF
+
+  ok "已生成 $(realpath --relative-to="$REPO_ROOT" "$file")"
+  echo "    ${domain}  →  127.0.0.1:${port}"
+  echo
+  info "确认域名已解析到本机公网 IP，然后执行: hl proxy reload"
+}
+
+proxy_rm() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "用法: hl proxy rm <名字>"
+  local file="$CADDY_DIR/sites/${name%%.*}.caddy"
+  [[ -f "$file" ]] || die "找不到 $file"
+  rm "$file"
+  ok "已删除 $(basename "$file")，执行 hl proxy reload 生效"
+}
+
+proxy_list() {
+  local files=("$CADDY_DIR"/sites/*.caddy)
+  if [[ ! -e "${files[0]}" ]]; then
+    echo "还没有配置任何反代。用 hl proxy add <名字> <端口> 添加。"
+    return
+  fi
+  printf '%-40s %s\n' "域名" "后端"
+  printf '%s\n' "----------------------------------------------------------------"
+  local f
+  for f in "${files[@]}"; do
+    # 从文件里抓出域名行（形如 "xxx.com {"）和 backend 端口
+    local domain backend
+    domain="$(grep -oE '^[a-zA-Z0-9.*-]+\s*\{' "$f" | head -1 | sed 's/\s*{//')"
+    backend="$(grep -oE 'import backend[_a-z]* [0-9]+' "$f" | head -1 | grep -oE '[0-9]+$')"
+    [[ -z "$backend" ]] && backend="$(grep -oE 'reverse_proxy [0-9.]+:[0-9]+' "$f" | head -1 | grep -oE '[0-9]+$')"
+    printf '%-40s %s\n' "${domain:-?}" "127.0.0.1:${backend:-?}"
+  done
+}
+
+proxy_reload() {
+  # 先校验配置语法，避免把错误配置推上去导致 Caddy 挂掉
+  info "校验 Caddy 配置"
+  if ! compose "$CADDY_DIR" exec -T caddy caddy validate --config /etc/caddy/Caddyfile 2>&1 | tail -3; then
+    die "配置有语法错误，已中止（现有配置未受影响）"
+  fi
+
+  info "热加载"
+  # reload 是平滑的：不断开现有连接，不重新申请证书
+  compose "$CADDY_DIR" exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+  ok "Caddy 已重新加载"
+}
+
+# ======================================================================
+#  db —— 共享数据库的建库助手
+# ======================================================================
+
+cmd_db() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    create) db_create "$@" ;;
+    list)   db_list ;;
+    shell)  db_shell "$@" ;;
+    *) die "用法: hl db {create <名字>|list|shell}" ;;
+  esac
+}
+
+db_create() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "用法: hl db create <名字>   例如: hl db create memos"
+
+  local pgdir="$REPO_ROOT/infra/020-postgresql"
+  local pass; pass="$(gen_pass)"
+
+  info "在共享 PostgreSQL 里创建库和账号: $name"
+
+  # 用 psql 执行建库语句。注意用户名和库名不能参数化，只能拼字符串，
+  # 所以先校验名字只含安全字符，防止 SQL 注入。
+  [[ "$name" =~ ^[a-z][a-z0-9_]*$ ]] || die "名字只能是小写字母、数字、下划线，且以字母开头"
+
+  local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
+
+  compose "$pgdir" exec -T postgresql psql -U "$pguser" -v ON_ERROR_STOP=1 <<EOF
+-- 建业务账号
+CREATE ROLE ${name} LOGIN PASSWORD '${pass}';
+-- 建库，owner 设为该账号（这样它对自己的库有完整权限）
+CREATE DATABASE ${name} OWNER ${name};
+EOF
+
+  ok "创建完成"
+  echo
+  echo "  库名:   ${name}"
+  echo "  用户:   ${name}"
+  echo "  密码:   ${C_YEL}${pass}${C_OFF}"
+  echo
+  echo "把密码填到应用的 .env 里的 DB_PASSWORD="
+}
+
+db_list() {
+  local pgdir="$REPO_ROOT/infra/020-postgresql"
+  local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
+  # \l+ 列出所有库，带大小信息
+  compose "$pgdir" exec -T postgresql psql -U "$pguser" -c "
+    SELECT datname AS 库名,
+           pg_catalog.pg_get_userbyid(datdba) AS 属主,
+           pg_size_pretty(pg_database_size(datname)) AS 大小
+    FROM pg_database
+    WHERE datistemplate = false
+    ORDER BY pg_database_size(datname) DESC;"
+}
+
+db_shell() {
+  local pgdir="$REPO_ROOT/infra/020-postgresql"
+  local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
+  local db="${1:-$(read_env "$pgdir/.env" POSTGRES_DB)}"
+  compose "$pgdir" exec postgresql psql -U "$pguser" -d "$db"
+}
+
+# ======================================================================
+#  backup —— 备份模块（委托给 bin/backup-*.sh）
+# ======================================================================
+
+cmd_backup() {
+  local sub="${1:-help}"; shift || true
+  case "$sub" in
+    init)    exec "$REPO_ROOT/bin/backup-init.sh" "$@" ;;
+    now|run) exec "$REPO_ROOT/bin/backup-run.sh" "$@" ;;
+    list|ls) exec "$REPO_ROOT/bin/backup-restore.sh" --list "$@" ;;
+    restore) exec "$REPO_ROOT/bin/backup-restore.sh" "$@" ;;
+    stats)   exec "$REPO_ROOT/bin/backup-restore.sh" --stats "$@" ;;
+    prune)   exec "$REPO_ROOT/bin/backup-run.sh" --prune-only "$@" ;;
+    *) cat <<'EOF'
+备份命令：
+  hl backup init       交互式配置（选后端、填密钥、初始化仓库）
+  hl backup now [应用]  立即备份，不指定应用则备份全部
+  hl backup list [应用] 查看快照列表
+  hl backup restore    交互式恢复（选快照 → 选目标 → 恢复）
+  hl backup stats      空间占用统计（按应用汇总）
+  hl backup prune      按保留策略清理旧快照
+EOF
+    ;;
+  esac
+}
+
+# ======================================================================
+#  rustdesk 小工具
+# ======================================================================
+
+cmd_rustdesk() {
+  local sub="${1:-key}"
+  case "$sub" in
+    key)
+      local f="$REPO_ROOT/apps/110-rustdesk/data/id_ed25519.pub"
+      [[ -f "$f" ]] || die "公钥还没生成，先执行 hl up rustdesk 启动服务"
+      echo "客户端配置里的 Key 填这个："
+      echo "${C_YEL}$(cat "$f")${C_OFF}"
+      ;;
+    *) die "用法: hl rustdesk key" ;;
+  esac
+}
+
+# ======================================================================
+#  帮助
+# ======================================================================
+
+cmd_help() {
+  sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# ======================================================================
+#  主入口
+# ======================================================================
+
+main() {
+  local cmd="${1:-help}"; shift || true
+  case "$cmd" in
+    up)       cmd_up "$@" ;;
+    down)     cmd_down "$@" ;;
+    restart)  cmd_restart "$@" ;;
+    logs)     cmd_logs "$@" ;;
+    pull)     cmd_pull "$@" ;;
+    ps|status) cmd_ps ;;
+    ports)    cmd_ports ;;
+    proxy)    cmd_proxy "$@" ;;
+    db)       cmd_db "$@" ;;
+    backup)   cmd_backup "$@" ;;
+    rustdesk) cmd_rustdesk "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *) die "未知命令 '$cmd'，执行 hl help 查看用法" ;;
+  esac
+}
+
+main "$@"

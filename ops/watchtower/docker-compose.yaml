@@ -1,0 +1,56 @@
+# ======================================================================
+#  Watchtower —— 自动拉新镜像并重建容器
+#
+#  工作模式：【按标签选择】WATCHTOWER_LABEL_ENABLE=true
+#  它只更新显式打了下面这个标签的容器：
+#      com.centurylinklabs.watchtower.enable: "true"
+#  没打标签的容器它完全不碰。这一点很重要——本项目里数据库
+#  （postgresql / mysql）故意打的是 "false"，就是为了让 watchtower 跳过。
+#
+#  搭配 tag 策略理解：
+#    应用（caddy/memos/rustdesk）→ 滚动标签 latest/stable → 开自动更新
+#      每天自动拉到最新版，省心。
+#    数据库（postgres/mysql）→ 锁大版本 17-alpine / 8.0 → 关自动更新
+#      大版本跳跃会导致数据目录不兼容，必须人工 dump/restore。
+#
+#  ⚠️ 自动更新的前提是你有备份。建议先把 ops/backup 配好再开它。
+#
+#  本服务无对外端口；官方镜像 FROM scratch（没有 shell），无法做 healthcheck。
+# ======================================================================
+
+name: watchtower
+
+services:
+  watchtower:
+    image: ${REGISTRY}/containrrr/watchtower:${WATCHTOWER_TAG}
+    container_name: watchtower
+    restart: unless-stopped
+
+    environment:
+      # 只更新带 enable=true 标签的容器，而不是全部容器
+      WATCHTOWER_LABEL_ENABLE: "true"
+      # 更新后删除旧镜像，避免磁盘被历史版本塞满
+      WATCHTOWER_CLEANUP: "true"
+      # 一次只滚动重启一个容器，减少同时中断的服务数量
+      WATCHTOWER_ROLLING_RESTART: "true"
+      # 检查计划，6 段 cron（秒 分 时 日 月 周），默认每天凌晨 4 点
+      WATCHTOWER_SCHEDULE: ${WATCHTOWER_SCHEDULE}
+      # watchtower 内置的 docker 客户端默认 API 版本偏旧，新 daemon 会拒绝，
+      # 这里显式指定。查你的版本：docker version --format '{{.Server.APIVersion}}'
+      DOCKER_API_VERSION: ${DOCKER_API_VERSION}
+      TZ: ${TZ}
+
+      # ---- 可选：更新完发通知 ----
+      # shoutrrr 格式的 URL，支持 telegram / bark / 钉钉 / 邮件等
+      # 例：telegram://<token>@telegram?chats=<chat_id>
+      # WATCHTOWER_NOTIFICATION_URL: ${WATCHTOWER_NOTIFICATION_URL}
+
+    volumes:
+      # ⚠️ 挂载 docker.sock 等同于给了容器宿主机 root 权限。
+      #    watchtower 需要它来拉镜像和重建容器，这是必须的，
+      #    但也意味着你要信任这个镜像的来源。
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    labels:
+      # watchtower 自己也自动更新
+      com.centurylinklabs.watchtower.enable: "true"

@@ -1,0 +1,26 @@
+# ==========================================================
+#  忽略规则：数据和密钥一律不进仓库
+#  只提交 docker-compose.yaml / .env.example / *.md / 脚本
+# ==========================================================
+
+# 1) 所有应用的数据目录（数据库文件、上传附件、证书……）
+#    匹配任意层级下的 data/ 目录
+data/
+
+# 2) 真实环境变量文件（含密码），只提交 .env.example
+.env
+*/.env
+**/.env
+
+# 3) 备份模块的仓库密钥 / 对象存储凭据
+ops/backup/repo.env
+ops/backup/*.secret
+
+# 4) Caddy 的实际站点配置（含真实域名），只提交模板
+infra/010-caddy/sites/*.caddy
+!infra/010-caddy/sites/example.caddy.disabled
+
+# 5) 杂项
+*.log
+*.tmp
+.DS_Store

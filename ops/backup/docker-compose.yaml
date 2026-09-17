@@ -1,0 +1,53 @@
+# ======================================================================
+#  备份模块 —— 基于 restic 的定时备份
+#
+#  为什么用 restic：
+#    - 增量备份 + 去重：只传变化的数据块，第二次备份通常只有几 MB
+#    - 客户端加密：数据在本机加密后才上传，对象存储服务商也看不到内容
+#    - 原生支持 S3 / B2 / 本地目录等多种后端
+#    - 自带保留策略（keep-daily / keep-weekly ...），自动清理旧快照
+#
+#  这个 compose 只起一个常驻的定时调度容器。
+#  所有手动操作（立即备份、查看列表、恢复）都用 bin/hl backup 子命令，
+#  它们是一次性运行的临时容器，不需要常驻。
+#
+#  配置在 repo.env（含对象存储密钥，已被 git 忽略）。
+#  第一次用请执行交互式向导：  bin/hl backup init
+# ======================================================================
+
+name: backup
+
+services:
+  # ---- 定时调度器：常驻，按 cron 触发备份 ----
+  scheduler:
+    image: ${REGISTRY}/library/alpine:${ALPINE_TAG}
+    container_name: backup-scheduler
+    restart: unless-stopped
+
+    # 用 alpine 自带的 crond 做调度。
+    # 为什么不用 restic 镜像自己调度？因为 restic 镜像里没有 cron，
+    # 而 alpine 里装 docker-cli 后可以直接调用宿主 docker 跑备份任务，
+    # 这样备份脚本能访问所有应用目录和数据库容器。
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        # 安装 docker 客户端（用来调用宿主的 docker 执行备份）
+        apk add --no-cache docker-cli tzdata >/dev/null 2>&1
+        # 把 cron 计划写进 crontab：到点执行仓库里的备份脚本
+        echo "$$BACKUP_SCHEDULE cd /repo && /repo/bin/backup-run.sh >> /repo/ops/backup/backup.log 2>&1" > /etc/crontabs/root
+        echo "[backup] 调度已启动，计划: $$BACKUP_SCHEDULE"
+        # -f 前台运行，-l 2 日志级别
+        exec crond -f -l 2
+
+    environment:
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE}
+      TZ: ${TZ}
+
+    volumes:
+      # 挂载整个仓库：备份脚本要读各应用的 .env 和 data/ 目录
+      - ../..:/repo
+      # 调用宿主 docker，用于 pg_dump / mysqldump 和启动 restic 容器
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"

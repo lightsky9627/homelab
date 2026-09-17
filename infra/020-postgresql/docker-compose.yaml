@@ -1,0 +1,80 @@
+# ======================================================================
+#  PostgreSQL —— 共享数据库实例
+#
+#  给多个应用当后端库用。应用有两种连接方式：
+#    1) 同机应用走 loopback：127.0.0.1:5432（本项目默认，最简单）
+#    2) 其它 compose 项目走容器网络：加入 homelab-db 网络后用 postgresql:5432
+#
+#  ⚠️ 重要：镜像标签锁定大版本 17-alpine，且【不开】watchtower 自动更新。
+#     PostgreSQL 的数据目录格式和大版本强绑定，如果 watchtower 半夜把
+#     17 升成 18，容器会因为 "database files are incompatible" 直接起不来，
+#     而且改回 17 也起不来（数据目录已被新版本标记）。
+#     大版本升级必须手动 pg_dump → 换镜像 → pg_restore，见 README。
+#     锁 17-alpine 仍然能自动吃到 17.x 的安全补丁，够用了。
+# ======================================================================
+
+name: postgresql
+
+# 对外网络：其它 compose 项目可以 join 进来用服务名连接
+networks:
+  default:
+    name: homelab-db
+
+services:
+  postgresql:
+    image: ${REGISTRY}/library/postgres:${POSTGRES_TAG}
+    container_name: postgresql
+    restart: unless-stopped
+
+    # 停止时给 1 分钟做 checkpoint，避免数据损坏
+    stop_grace_period: 1m
+
+    environment:
+      # 首次启动（数据目录为空时）会自动建库和账号，之后改这些变量不再生效
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # --data-checksums 开启数据页校验和，能及早发现磁盘静默损坏。
+      # 只在初始化时生效，事后无法开启，所以一开始就加上。
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+      # 把真正的数据放在挂载点的子目录里，
+      # 避免卷根目录的 lost+found 等文件干扰 initdb 的"目录必须为空"检查
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: ${TZ}
+
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+
+    command:
+      - postgres
+      # 数据库内部时区，影响 now() / current_timestamp 的返回值
+      - -c
+      - timezone=${TZ}
+      # 最大连接数。每个连接约占 5-10MB 内存，按机器配置调
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS}
+      # 共享缓冲区，官方建议设为物理内存的 25%
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS}
+
+    ports:
+      # 只绑 127.0.0.1，绝不对公网暴露数据库！
+      # 需要远程连接请用 SSH 隧道：ssh -L 5432:127.0.0.1:5432 user@host
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+
+    healthcheck:
+      # $$ 是 compose 的转义写法，实际传给容器的是 $POSTGRES_USER
+      # （引用的是容器内的环境变量，不是宿主的）
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+    labels:
+      # 明确【关闭】自动更新，理由见文件开头
+      com.centurylinklabs.watchtower.enable: "false"
+      # 备份模块靠这两个标签自动发现要备份哪些库，见 ops/backup/
+      homelab.backup.type: "postgres"
+      homelab.backup.db: "${POSTGRES_DB}"
+      homelab.backup.user: "${POSTGRES_USER}"

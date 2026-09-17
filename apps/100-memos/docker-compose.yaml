@@ -1,0 +1,82 @@
+# ======================================================================
+#  Memos —— 轻量级笔记 / 备忘服务
+#
+#  数据库策略：用 infra/020-postgresql 那个共享实例，不自己起一个 pg。
+#  好处是只有一份数据库要备份、要调优、要升级。
+#
+#  首次使用前，需要在共享 pg 里给 memos 建一个独立的库和账号：
+#      bin/hl db create memos
+#  这条命令会生成随机密码并打印出来，把它填到本目录的 .env 里。
+#
+#  镜像用 stable 滚动标签 + watchtower 自动更新：
+#  memos 是应用层，升级只涉及自己的表结构迁移，它启动时会自动执行，
+#  不像数据库大版本那样有不可逆风险。
+# ======================================================================
+
+name: memos
+
+# 加入共享数据库的网络。
+# external: true 表示这个网络由 infra/020-postgresql 创建，这里只是接进去，
+# 所以必须先启动 postgresql，memos 才能起来。
+networks:
+  db:
+    name: homelab-db
+    external: true
+
+services:
+  memos:
+    image: ${REGISTRY}/neosmemo/memos:${MEMOS_TAG}
+    container_name: memos
+    restart: unless-stopped
+
+    environment:
+      # ---- 数据库：强制用 PostgreSQL，不用默认的 sqlite ----
+      MEMOS_DRIVER: postgres
+      # 走 docker 网络用服务名连接共享 PostgreSQL。
+      # 这里的 postgresql 是容器名，由 homelab-db 网络内的 DNS 解析。
+      # 端口是容器内的 5432（不是宿主映射的端口，别混淆）。
+      # sslmode=disable：同一个 docker 网络内的明文连接，不需要 TLS。
+      MEMOS_DSN: postgres://${DB_USER}:${DB_PASSWORD}@postgresql:5432/${DB_NAME}?sslmode=disable
+
+      # 容器内监听端口，保持 memos 默认的 5230
+      MEMOS_PORT: "5230"
+
+      # 对外访问地址（带协议的完整域名）。
+      # 用于生成分享链接、RSS 地址等，必须和实际访问的域名一致，否则链接会错。
+      MEMOS_INSTANCE_URL: ${MEMOS_INSTANCE_URL}
+
+      # 容器以 root 启动，entrypoint 修好数据目录权限后降权到这个 UID/GID 运行
+      MEMOS_UID: "${MEMOS_UID}"
+      MEMOS_GID: "${MEMOS_GID}"
+
+      TZ: ${TZ}
+
+    networks:
+      # default 让它能对外访问（拉取链接预览等），db 用来连数据库
+      - default
+      - db
+
+    volumes:
+      # 附件、缩略图等文件（笔记正文在 PostgreSQL 里）
+      - ./data/memos:/var/opt/memos
+
+    ports:
+      # memos 默认端口 5230，只绑 127.0.0.1，由 Caddy 反代出去
+      # 反代命令：bin/hl proxy add memos 5230
+      - "127.0.0.1:${MEMOS_PORT}:5230"
+
+    healthcheck:
+      # alpine 基础镜像自带 busybox wget
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:5230/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    labels:
+      # 应用层，开启自动更新
+      com.centurylinklabs.watchtower.enable: "true"
+      # 备份模块：这个应用的数据 = pg 里的 memos 库 + ./data/memos 目录
+      homelab.backup.enable: "true"
+      homelab.backup.pg-db: "${DB_NAME}"
+      homelab.backup.paths: "./data/memos"

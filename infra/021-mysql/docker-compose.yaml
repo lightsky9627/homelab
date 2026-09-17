@@ -1,0 +1,68 @@
+# ======================================================================
+#  MySQL —— 共享数据库实例
+#
+#  ⚠️ 同 PostgreSQL：标签锁定大版本 8.0，【不开】watchtower 自动更新。
+#     mysql:latest 目前已经是 9.x，自动升上去会导致数据目录不兼容、
+#     容器反复重启且无法降级回来。
+#     锁 8.0 可以自动吃到 8.0.x 小版本修复，这是安全的。
+#
+#  只有需要 MySQL 的应用才起它。大部分应用用 PostgreSQL 就够了，
+#  不用两个数据库都开着占内存。
+# ======================================================================
+
+name: mysql
+
+networks:
+  default:
+    name: homelab-db-mysql
+
+services:
+  mysql:
+    image: ${REGISTRY}/library/mysql:${MYSQL_TAG}
+    container_name: mysql
+    restart: unless-stopped
+
+    # 停止时给足时间刷 InnoDB 缓冲池到磁盘，强杀可能损坏数据
+    stop_grace_period: 1m
+
+    environment:
+      # 以下变量仅在首次启动（数据目录为空）时生效
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: ${TZ}
+
+    command:
+      # 字符集统一 utf8mb4，否则 emoji 和部分生僻字会存不进去报错
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      # 数据库内部时区，和 TZ 对齐，让 now() 返回东八区时间
+      - --default-time-zone=+08:00
+      # 允许创建自定义函数，很多框架的迁移脚本需要
+      - --log-bin-trust-function-creators=1
+      # InnoDB 缓冲池大小，MySQL 性能最关键的参数，建议物理内存的 50-70%
+      - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL}
+
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+
+    ports:
+      # 只绑 127.0.0.1，绝不对公网暴露
+      - "127.0.0.1:${MYSQL_PORT}:3306"
+
+    healthcheck:
+      # $$ 是 compose 转义，实际引用容器内的 $MYSQL_ROOT_PASSWORD
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+    labels:
+      # 明确关闭自动更新，理由见文件开头
+      com.centurylinklabs.watchtower.enable: "false"
+      # 备份模块用的发现标签
+      homelab.backup.type: "mysql"
+      homelab.backup.db: "${MYSQL_DATABASE}"
+      homelab.backup.user: "root"

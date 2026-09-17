@@ -1,0 +1,76 @@
+# ======================================================================
+#  Caddy 主配置
+#
+#  这个文件你基本不用动。真正的反代规则放在 sites/ 目录下，
+#  一个域名一个 .caddy 文件，由下面最后一行的 import 自动全部加载。
+#
+#  加一个反代（推荐用脚本，自动生成文件并热加载）：
+#      bin/hl proxy add memos 5230
+#
+#  手动加也行：
+#      cp sites/example.caddy.disabled sites/memos.caddy
+#      vim sites/memos.caddy          # 改域名和端口
+#      bin/hl proxy reload
+# ======================================================================
+
+{
+	# ---- ACME 账户邮箱 ----
+	# 冒号后面是缺省值：环境变量 ACME_EMAIL 没设时用 you@example.com
+	email {$ACME_EMAIL:you@example.com}
+
+	# ---- 调试期建议先打开 staging ----
+	# Let's Encrypt 正式环境有速率限制（同一域名每周最多 5 张证书），
+	# 反复调试很容易触发，被限制后要等一周。
+	# 调通了再注释掉这行，然后 bin/hl proxy reload 换成正式证书。
+	# staging 签出来的证书浏览器会报不受信任，属正常现象。
+	#
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# ======================================================================
+#  可复用片段（snippet）—— 用 import 调用，避免每个站点重复写
+# ======================================================================
+
+# 最常用：反代到本机某个端口
+#   用法：import backend 5230
+#   {args[0]} 就是调用时传的第一个参数
+(backend) {
+	reverse_proxy 127.0.0.1:{args[0]}
+}
+
+# 带 WebSocket 和大文件上传的反代
+#   用法：import backend_ws 5230 512MB
+(backend_ws) {
+	# 放开请求体大小限制（默认 Caddy 不限，但反代后端可能限）
+	request_body {
+		max_size {args[1]}
+	}
+	reverse_proxy 127.0.0.1:{args[0]} {
+		# 传递真实客户端信息给后端应用，否则后端看到的 IP 全是 127.0.0.1
+		header_up X-Real-IP {remote_host}
+		# WebSocket 升级由 Caddy 自动处理，无需额外配置
+	}
+}
+
+# 通用安全响应头，需要就在站点里 import security_headers
+(security_headers) {
+	header {
+		# 强制浏览器后续都走 HTTPS（谨慎：一旦下发，一年内该域名无法回退 HTTP）
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# 禁止被别的网站用 iframe 嵌套，防点击劫持
+		X-Frame-Options "SAMEORIGIN"
+		# 禁止浏览器猜测 MIME 类型
+		X-Content-Type-Options "nosniff"
+		# 不泄露来源页面地址
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# 隐藏 Caddy 版本号
+		-Server
+	}
+}
+
+# ======================================================================
+#  加载所有站点配置
+#  sites/*.caddy 里每个文件定义一个域名。.disabled 后缀的不会被加载，
+#  可以用来临时停用某个站点。
+# ======================================================================
+import /etc/caddy/sites/*.caddy
