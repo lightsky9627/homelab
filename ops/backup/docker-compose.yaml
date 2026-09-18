@@ -20,7 +20,7 @@ name: backup
 services:
   # ---- 定时调度器：常驻，按 cron 触发备份 ----
   scheduler:
-    image: ${REGISTRY}/library/alpine:${ALPINE_TAG}
+    image: alpine:${ALPINE_TAG}
     container_name: backup-scheduler
     restart: unless-stopped
 

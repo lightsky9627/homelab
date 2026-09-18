@@ -22,7 +22,7 @@ name: watchtower
 
 services:
   watchtower:
-    image: ${REGISTRY}/containrrr/watchtower:${WATCHTOWER_TAG}
+    image: containrrr/watchtower:${WATCHTOWER_TAG}
     container_name: watchtower
     restart: unless-stopped
 

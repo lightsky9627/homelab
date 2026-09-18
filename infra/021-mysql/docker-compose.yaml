@@ -18,7 +18,7 @@ networks:
 
 services:
   mysql:
-    image: ${REGISTRY}/library/mysql:${MYSQL_TAG}
+    image: mysql:${MYSQL_TAG}
     container_name: mysql
     restart: unless-stopped
 

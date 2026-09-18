@@ -30,7 +30,7 @@ homelab/
 ```bash
 # 1. 初始化全局配置
 cp .env.example .env
-vim .env                  # 改 REGISTRY、BASE_DOMAIN、ACME_EMAIL
+vim .env                  # 改 BASE_DOMAIN、ACME_EMAIL
 
 # 2. 启动基础设施
 bin/hl up caddy
@@ -82,20 +82,31 @@ bin/hl backup prune          # 清理旧快照
 bin/hl rustdesk key          # 打印 RustDesk 公钥
 ```
 
-## 镜像站
+## 镜像加速
 
-所有 compose 文件的镜像都写成 `${REGISTRY}/xxx`，在根目录 `.env` 统一切换：
+所有 compose 文件用的是标准 Docker Hub 镜像名（如 `postgres:17-alpine`），
+任何人 clone 下来都能直接跑。
+
+国内服务器直连 Docker Hub 很慢，建议在 Docker daemon 层面配置镜像加速：
 
 ```bash
-# 公网镜像站（默认）
-REGISTRY=hub.bravexist.cn
+# 创建或编辑 /etc/docker/daemon.json
+sudo tee /etc/docker/daemon.json <<'EOF'
+{
+  "registry-mirrors": [
+    "https://hub.bravexist.cn"
+  ]
+}
+EOF
 
-# 内网 harbor
-REGISTRY=harbor.qx.lab/dockerhub
+# 重启 docker
+sudo systemctl restart docker
 
-# 官方源
-REGISTRY=docker.io
+# 验证：应该能看到 Registry Mirrors 列表
+docker info | grep -A5 'Registry Mirrors'
 ```
+
+内网有 harbor 的话加上 `"https://harbor.qx.lab"`，多个镜像站会按顺序尝试。
 
 ## 自动更新策略
 
@@ -129,7 +140,7 @@ bin/hl up backup      # 启动定时调度（默认每天 3:30）
 # 1. 建目录
 mkdir -p apps/120-newapp
 
-# 2. 写 docker-compose.yaml，镜像用 ${REGISTRY}/xxx
+# 2. 写 docker-compose.yaml，镜像用标准 Docker Hub 名称
 #    端口只绑 127.0.0.1，由 Caddy 反代
 #    想自动更新就加 watchtower 标签
 #    想备份就加 homelab.backup.* 标签

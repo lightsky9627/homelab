@@ -28,7 +28,7 @@ name: rustdesk
 services:
   # ---- 中继服务器：先启动，因为 hbbs 依赖它 ----
   hbbr:
-    image: ${REGISTRY}/rustdesk/rustdesk-server:${RUSTDESK_TAG}
+    image: rustdesk/rustdesk-server:${RUSTDESK_TAG}
     container_name: rustdesk-hbbr
     restart: unless-stopped
 
@@ -50,7 +50,7 @@ services:
 
   # ---- ID / 打洞服务器 ----
   hbbs:
-    image: ${REGISTRY}/rustdesk/rustdesk-server:${RUSTDESK_TAG}
+    image: rustdesk/rustdesk-server:${RUSTDESK_TAG}
     container_name: rustdesk-hbbs
     restart: unless-stopped
 

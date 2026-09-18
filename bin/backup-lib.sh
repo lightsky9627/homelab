@@ -34,11 +34,10 @@ read_env() {
   sed -n "s/^${key}=//p" "$file" | tail -1 | sed 's/^["'\'']//; s/["'\'']$//'
 }
 
-# 读取全局配置（镜像仓库前缀等）
+# 读取全局配置
 load_global() {
-  REGISTRY="$(read_env "$REPO_ROOT/.env" REGISTRY 2>/dev/null || echo "hub.bravexist.cn")"
   RESTIC_TAG="$(read_env "$BACKUP_DIR/.env" RESTIC_TAG 2>/dev/null || echo "latest")"
-  RESTIC_IMAGE="${REGISTRY}/restic/restic:${RESTIC_TAG}"
+  RESTIC_IMAGE="restic/restic:${RESTIC_TAG}"
 }
 
 # 检查备份是否已配置
@@ -163,6 +162,6 @@ notify() {
   local url; url="$(read_env "$REPO_ENV" NOTIFY_URL 2>/dev/null || echo "")"
   [[ -n "$url" ]] || return 0
   load_global
-  docker run --rm "${REGISTRY}/containrrr/shoutrrr:latest" \
+  docker run --rm "containrrr/shoutrrr:latest" \
     send --url "$url" --message "$msg" >/dev/null 2>&1 || true
 }

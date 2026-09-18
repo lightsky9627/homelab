@@ -25,7 +25,7 @@ networks:
 
 services:
   memos:
-    image: ${REGISTRY}/neosmemo/memos:${MEMOS_TAG}
+    image: neosmemo/memos:${MEMOS_TAG}
     container_name: memos
     restart: unless-stopped
 

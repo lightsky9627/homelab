@@ -22,7 +22,7 @@ networks:
 
 services:
   postgresql:
-    image: ${REGISTRY}/library/postgres:${POSTGRES_TAG}
+    image: postgres:${POSTGRES_TAG}
     container_name: postgresql
     restart: unless-stopped
 

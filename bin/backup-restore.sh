@@ -224,7 +224,7 @@ do_restore() {
         -v "$REPO_ROOT:/data" \
         -v "restic-cache:/root/.cache/restic" \
         ${RESTIC_LOCAL_MOUNT:-} \
-        "${REGISTRY:-hub.bravexist.cn}/restic/restic:${RESTIC_TAG:-latest}" \
+        "restic/restic:${RESTIC_TAG:-latest}" \
         restore "$snap" --tag "app:${app}" \
         --target "/data/ops/backup/restored/$(basename "$outdir")" 2>&1 | sed 's/^/  /'
 

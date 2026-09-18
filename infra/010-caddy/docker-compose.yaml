@@ -18,7 +18,7 @@ name: caddy
 
 services:
   caddy:
-    image: ${REGISTRY}/library/caddy:${CADDY_TAG}
+    image: caddy:${CADDY_TAG}
     container_name: caddy
     restart: unless-stopped
 
