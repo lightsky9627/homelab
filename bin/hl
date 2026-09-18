@@ -108,6 +108,10 @@ compose() {
 # 确保 .env 存在，不存在就从 .env.example 复制
 ensure_env() {
   local dir="$1"
+
+  # 如果是从旧带编号的目录结构升级过来的，先自动检测并迁移旧配置和数据
+  migrate_legacy_dir "$dir"
+
   if [[ ! -f "$dir/.env" && -f "$dir/.env.example" ]]; then
     cp "$dir/.env.example" "$dir/.env"
     chmod 600 "$dir/.env"
@@ -115,12 +119,77 @@ ensure_env() {
   fi
 }
 
+# 迁移旧版本（带数字前缀如 020-postgresql）遗留的 .env 和 data/
+migrate_legacy_dir() {
+  local new_dir="$1"
+  local rel="${new_dir#$REPO_ROOT/}"
+  rel="${rel%/}"
+
+  local old_rel=""
+  case "$rel" in
+    infra/caddy)      old_rel="infra/010-caddy" ;;
+    infra/postgresql) old_rel="infra/020-postgresql" ;;
+    infra/mysql)      old_rel="infra/021-mysql" ;;
+    apps/memos)       old_rel="apps/100-memos" ;;
+    apps/rustdesk)    old_rel="apps/110-rustdesk" ;;
+  esac
+
+  [[ -n "$old_rel" ]] || return 0
+  local old_dir="$REPO_ROOT/$old_rel"
+  [[ -d "$old_dir" ]] || return 0
+
+  # 1. 迁移 .env 文件
+  if [[ -f "$old_dir/.env" ]]; then
+    local need_migrate=0
+    if [[ ! -f "$new_dir/.env" ]]; then
+      need_migrate=1
+    elif grep -q "CHANGE_ME" "$new_dir/.env" && ! grep -q "CHANGE_ME" "$old_dir/.env"; then
+      # 新目录是刚刚根据模板自动生成的，而老目录是用户已经填写好真实密钥的
+      need_migrate=1
+    fi
+
+    if [[ $need_migrate -eq 1 ]]; then
+      cp -p "$old_dir/.env" "$new_dir/.env"
+      chmod 600 "$new_dir/.env"
+      ok "检测到旧目录存在配置文件，已自动恢复: $old_rel/.env -> $rel/.env"
+    fi
+  fi
+
+  # 2. 迁移 data/ 目录
+  if [[ -d "$old_dir/data" && ! -d "$new_dir/data" ]]; then
+    mv "$old_dir/data" "$new_dir/data"
+    ok "检测到旧目录存在应用数据，已自动迁移: $old_rel/data -> $rel/data"
+  fi
+
+  # 3. 迁移 caddy sites/ 目录配置
+  if [[ "$rel" == "infra/caddy" && -d "$old_dir/sites" ]]; then
+    local site_file
+    for site_file in "$old_dir"/sites/*.caddy; do
+      [[ -f "$site_file" ]] || continue
+      mkdir -p "$new_dir/sites"
+      mv "$site_file" "$new_dir/sites/"
+      ok "已自动迁移反代配置: $(basename "$site_file")"
+    done
+  fi
+}
+
 # 确保全局 .env 存在
 ensure_root_env() {
+  # 触发一次旧目录全局检查
+  migrate_all_legacy
+
   if [[ ! -f "$REPO_ROOT/.env" ]]; then
     cp "$REPO_ROOT/.env.example" "$REPO_ROOT/.env"
     warn "已创建根目录 .env，建议先改 BASE_DOMAIN 和 ACME_EMAIL"
   fi
+}
+
+migrate_all_legacy() {
+  local d
+  for d in "$REPO_ROOT"/infra/*/ "$REPO_ROOT"/apps/*/; do
+    [[ -d "$d" ]] || continue
+    migrate_legacy_dir "$d"
+  done
 }
 
 # 从 env 文件里读一个变量的值（不 source，避免执行恶意内容）
