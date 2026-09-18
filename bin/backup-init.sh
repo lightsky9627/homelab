@@ -72,6 +72,7 @@ BACKEND="$(ask "选择 (1-4)" "1")"
 REPO_URL=""
 AWS_KEY=""; AWS_SECRET=""
 B2_ID=""; B2_KEY=""
+BUCKET_LOOKUP=""
 
 case "$BACKEND" in
   1)
@@ -108,49 +109,50 @@ case "$BACKEND" in
 
     PREFIX="$(ask "仓库在 bucket 内的路径前缀（留空则放根目录）" "homelab")"
 
+    # ---- 拼接仓库 URL ----
+    # 重要：restic 的 S3 地址格式固定为 s3:endpoint/bucket/path，
+    # bucket 永远写在路径第一段，不能写成 bucket.endpoint 这种域名形式。
+    # （写成域名形式的话，restic 会把路径第一段当成 bucket，导致报错）
+    # 真正的寻址风格由下面的 s3.bucket-lookup 选项控制。
+    if [[ -n "$PREFIX" ]]; then
+      REPO_URL="s3:${SCHEME}://${ENDPOINT}/${BUCKET}/${PREFIX}"
+    else
+      REPO_URL="s3:${SCHEME}://${ENDPOINT}/${BUCKET}"
+    fi
+
     # ---- 寻址风格 ----
     echo
-    echo "${C_DIM}寻址风格决定 bucket 写在 URL 的哪个位置：${C_OFF}"
-    echo "${C_DIM}  虚拟主机风格：${BUCKET}.${ENDPOINT}/${PREFIX}${C_OFF}"
-    echo "${C_DIM}  路径风格：    ${ENDPOINT}/${BUCKET}/${PREFIX}${C_OFF}"
+    echo "${C_DIM}寻址风格决定实际发给服务器的 HTTP 请求长什么样：${C_OFF}"
+    echo "${C_DIM}  虚拟主机风格：请求发往 ${BUCKET}.${ENDPOINT}${C_OFF}"
+    echo "${C_DIM}  路径风格：    请求发往 ${ENDPOINT}/${BUCKET}${C_OFF}"
+    echo "${C_DIM}（两种风格下配置里的仓库地址写法都一样，只是底层请求不同）${C_OFF}"
     echo
-    echo "  1) 虚拟主机风格（推荐）"
-    echo "     主流云厂商都用这个：AWS S3 / 阿里云 OSS / 腾讯云 COS / Cloudflare R2"
-    echo "  2) 路径风格"
-    echo "     自建 MinIO / Ceph 等多数默认这个，AWS 已官方弃用"
+    echo "  1) 自动检测（推荐，绝大多数情况选这个）"
+    echo "  2) 强制虚拟主机风格（dns）"
+    echo "     主流云厂商都支持：AWS S3 / 阿里云 OSS / 腾讯云 COS / R2"
+    echo "  3) 强制路径风格（path）"
+    echo "     自建 MinIO / Ceph 如果没配泛域名就选这个"
     echo
 
-    # 根据 endpoint 自动猜一个默认值，减少用户选错的概率
+    # 有些服务商强制要求虚拟主机风格，auto 探测不出来，直接给它们默认 dns。
+    # 腾讯云 COS 会明确报错：must be addressed using COS virtual-styled domain
     STYLE_DEFAULT="1"
     case "$ENDPOINT" in
-      *amazonaws.com|*aliyuncs.com|*myqcloud.com|*r2.cloudflarestorage.com)
-        STYLE_DEFAULT="1" ;;
-      *)
-        # 自建的服务（MinIO 等）大多数是路径风格
-        STYLE_DEFAULT="2" ;;
+      *myqcloud.com|*aliyuncs.com|*r2.cloudflarestorage.com) STYLE_DEFAULT="2" ;;
     esac
+    [[ "$STYLE_DEFAULT" == "2" ]] && \
+      echo "${C_DIM}（检测到你用的服务商要求虚拟主机风格，已默认选 2）${C_OFF}"
 
-    STYLE="$(ask "选择 (1-2)" "$STYLE_DEFAULT")"
-
-    # 拼接仓库 URL。注意 PREFIX 可能为空，要避免出现末尾多余的斜杠。
-    if [[ "$STYLE" == "1" ]]; then
-      # 虚拟主机风格：bucket 作为域名的一部分
-      if [[ -n "$PREFIX" ]]; then
-        REPO_URL="s3:${SCHEME}://${BUCKET}.${ENDPOINT}/${PREFIX}"
-      else
-        REPO_URL="s3:${SCHEME}://${BUCKET}.${ENDPOINT}"
-      fi
-    else
-      # 路径风格：bucket 作为路径的第一段
-      if [[ -n "$PREFIX" ]]; then
-        REPO_URL="s3:${SCHEME}://${ENDPOINT}/${BUCKET}/${PREFIX}"
-      else
-        REPO_URL="s3:${SCHEME}://${ENDPOINT}/${BUCKET}"
-      fi
-    fi
+    STYLE="$(ask "选择 (1-3)" "$STYLE_DEFAULT")"
+    case "$STYLE" in
+      2) BUCKET_LOOKUP="dns"  ;;
+      3) BUCKET_LOOKUP="path" ;;
+      *) BUCKET_LOOKUP="auto" ;;
+    esac
 
     echo
     info "仓库地址: ${C_YEL}${REPO_URL}${C_OFF}"
+    info "寻址风格: ${C_YEL}${BUCKET_LOOKUP}${C_OFF}"
 
     AWS_KEY="$(ask "Access Key ID")"
     [[ -n "$AWS_KEY" ]] || die "Access Key 不能为空"
@@ -258,6 +260,11 @@ if [[ -n "$AWS_KEY" ]]; then
 AWS_ACCESS_KEY_ID=${AWS_KEY}
 AWS_SECRET_ACCESS_KEY=${AWS_SECRET}
 
+# ---- 寻址风格 ----
+# auto = 自动检测，dns = 虚拟主机风格，path = 路径风格
+# 连不上时可以改成另一种试试
+RESTIC_OPTIONS=s3.bucket-lookup=${BUCKET_LOOKUP}
+
 EOF
 fi
 
@@ -318,20 +325,27 @@ else
     echo
     echo "${C_RED}初始化失败。常见原因：${C_OFF}"
     echo
-    echo "  • ${C_YEL}Bucket name cannot be empty${C_OFF}"
-    echo "    仓库地址里没包含 bucket，重新运行向导并填写 Bucket 名称"
+    echo "  • ${C_YEL}The specified bucket does not exist${C_OFF}"
+    echo "    bucket 没建，或者名字拼错了。restic 不会自动建 bucket，"
+    echo "    要先去云控制台手动创建。"
+    echo "    腾讯云 COS 的 bucket 名必须带 APPID，如 homelab-1257968179"
     echo
-    echo "  • ${C_YEL}寻址风格选错${C_OFF}"
-    echo "    试试另一种风格。当前地址：${REPO_URL}"
+    echo "  • ${C_YEL}The specified key does not exist${C_OFF}"
+    echo "    通常是仓库地址写成了 bucket.endpoint 的形式。"
+    echo "    restic 要求 bucket 写在路径里，正确格式："
+    echo "      ${C_GRN}s3:https://<endpoint>/<bucket>/<路径>${C_OFF}"
+    echo "    当前：${REPO_URL}"
     echo
-    echo "  • ${C_YEL}bucket 不存在${C_OFF}"
-    echo "    restic 不会自动建 bucket，要先在控制台手动创建"
+    echo "  • ${C_YEL}must be addressed using COS virtual-styled domain${C_OFF}"
+    echo "    服务商要求虚拟主机风格，在 repo.env 里改成："
+    echo "      ${C_GRN}RESTIC_OPTIONS=s3.bucket-lookup=dns${C_OFF}"
     echo
-    echo "  • ${C_YEL}腾讯云 COS 忘带 APPID${C_OFF}"
-    echo "    bucket 名必须写完整，如 mybucket-1250000000"
+    echo "  • ${C_YEL}连接超时 / 域名解析失败${C_OFF}"
+    echo "    如果是自建 MinIO 且没配泛域名，在 repo.env 里改成："
+    echo "      ${C_GRN}RESTIC_OPTIONS=s3.bucket-lookup=path${C_OFF}"
     echo
-    echo "  • ${C_YEL}密钥权限不足${C_OFF}"
-    echo "    需要读写权限，只读密钥无法初始化"
+    echo "  • ${C_YEL}Access Denied / SignatureDoesNotMatch${C_OFF}"
+    echo "    密钥错了或权限不足，需要读写权限"
     echo
     echo "${C_DIM}配置已保留在 ops/backup/repo.env，可直接编辑后重试：${C_OFF}"
     echo "${C_DIM}  vim ops/backup/repo.env${C_OFF}"
