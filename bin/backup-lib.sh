@@ -38,20 +38,6 @@ read_env() {
 load_global() {
   RESTIC_TAG="$(read_env "$BACKUP_DIR/.env" RESTIC_TAG 2>/dev/null || echo "latest")"
   RESTIC_IMAGE="restic/restic:${RESTIC_TAG}"
-
-  # 寻址风格：从 repo.env 读出来转成命令行的 -o 参数。
-  # 虽然 restic 也认 RESTIC_OPTIONS 环境变量，但显式传 -o 更可靠。
-  RESTIC_OPTS=()
-  local lookup
-  lookup="$(read_env "$REPO_ENV" RESTIC_OPTIONS 2>/dev/null || true)"
-  if [[ -n "$lookup" ]]; then
-    # RESTIC_OPTIONS 可能是逗号分隔的多个选项
-    local opt
-    IFS=',' read -ra _opts <<< "$lookup"
-    for opt in "${_opts[@]}"; do
-      [[ -n "$opt" ]] && RESTIC_OPTS+=(-o "$opt")
-    done
-  fi
 }
 
 # 检查备份是否已配置
@@ -77,7 +63,7 @@ run_restic() {
     -v "$REPO_ROOT:/data:ro" \
     -v "restic-cache:/root/.cache/restic" \
     ${RESTIC_LOCAL_MOUNT:-} \
-    "$RESTIC_IMAGE" "$@" ${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}
+    "$RESTIC_IMAGE" "$@"
 }
 
 # 可写模式（恢复数据时需要写入，所以仓库目录不能只读挂载）
@@ -89,7 +75,7 @@ run_restic_rw() {
     -v "$REPO_ROOT:/data" \
     -v "restic-cache:/root/.cache/restic" \
     ${RESTIC_LOCAL_MOUNT:-} \
-    "$RESTIC_IMAGE" "$@" ${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}
+    "$RESTIC_IMAGE" "$@"
 }
 
 # 交互式运行（需要 tty，用于 restic 的交互提示）
@@ -101,7 +87,7 @@ run_restic_tty() {
     -v "$REPO_ROOT:/data" \
     -v "restic-cache:/root/.cache/restic" \
     ${RESTIC_LOCAL_MOUNT:-} \
-    "$RESTIC_IMAGE" "$@" ${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}
+    "$RESTIC_IMAGE" "$@"
 }
 
 # ----------------------------------------------------------------------
