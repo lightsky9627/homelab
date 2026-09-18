@@ -66,3 +66,9 @@ services:
       homelab.backup.type: "mysql"
       homelab.backup.db: "${MYSQL_DATABASE}"
       homelab.backup.user: "root"
+
+      # 开启备份：用 mysqldump --all-databases 导出全部库和账号
+      homelab.backup.enable: "true"
+      homelab.backup.mysql-dump-all: "true"
+      # 同 pg：有 dump 就够，不拷运行中的数据目录
+      homelab.backup.paths: ""

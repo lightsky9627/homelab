@@ -236,7 +236,7 @@ do_restore() {
       # 注意：库名不等于应用目录名（目录是 100-memos，库是 memos）
       local dumpfile dbname pguser
       dumpfile="$(find "$outdir" -name '*.sql.gz' -print -quit 2>/dev/null || true)"
-      pguser="$(read_env "$REPO_ROOT/infra/020-postgresql/.env" POSTGRES_USER 2>/dev/null || echo postgres)"
+      pguser="$(read_env "$REPO_ROOT/infra/postgresql/.env" POSTGRES_USER 2>/dev/null || echo postgres)"
 
       echo
       echo "${C_BLU}接下来手动操作：${C_OFF}"

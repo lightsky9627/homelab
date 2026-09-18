@@ -150,13 +150,18 @@ discover_apps() {
     # 排除规则：逗号分隔的 glob 模式，用于跳过缓存、缩略图等不重要的文件
     excludes="$(grep -oE 'homelab\.backup\.exclude: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
 
+    # 全库 dump 开关（数据库容器自己用，连用户和权限一起导）
+    local dumpall mysqldumpall
+    dumpall="$(grep -oE 'homelab\.backup\.pg-dump-all: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+    mysqldumpall="$(grep -oE 'homelab\.backup\.mysql-dump-all: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+
     # pg 库名如果写的是 ${DB_NAME} 这种变量，从应用 .env 里解析出真实值
     if [[ "$pgdb" == '${'* ]]; then
       local var="${pgdb#\$\{}"; var="${var%\}}"
       pgdb="$(read_env "${d}.env" "$var" 2>/dev/null || echo "")"
     fi
 
-    echo "${d}|${name}|${pgdb}|${paths}|${excludes}"
+    echo "${d}|${name}|${pgdb}|${paths}|${excludes}|${dumpall}|${mysqldumpall}"
   done
   set -e
 }
