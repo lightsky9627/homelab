@@ -46,7 +46,7 @@ SUCCEEDED=()
 #  备份单个应用
 # ======================================================================
 backup_app() {
-  local dir="$1" name="$2" pgdb="$3" paths="$4" excludes="${5:-}"
+  local dir="$1" name="$2" pgdb="$3" paths="$4"
 
   info "备份 ${C_YEL}${name}${C_OFF}"
 
@@ -111,31 +111,14 @@ backup_app() {
     return 0
   fi
 
-  # ---- 4) 组装排除规则 ----
-  # 先放通用的：套接字和 pid 文件备份了也没意义，而且可能导致 restic 报错。
-  local -a exclude_args=(--exclude '*.sock' --exclude '*.pid')
-
-  # 再叠加应用自己声明的。比如 RSS 阅读器的文章缓存、缩略图，
-  # 这些东西丢了会自动重建，没必要占备份空间。
-  if [[ -n "$excludes" ]]; then
-    local -a ex_arr
-    IFS=',' read -ra ex_arr <<< "$excludes"
-    local ex
-    for ex in "${ex_arr[@]}"; do
-      ex="$(echo "$ex" | xargs)"   # 去首尾空格
-      [[ -n "$ex" ]] || continue
-      exclude_args+=(--exclude "$ex")
-      echo "    排除: ${ex}"
-    done
-  fi
-
-  # ---- 5) 交给 restic ----
+  # ---- 4) 交给 restic ----
   # --tag 打上应用名，之后可以用 --tag 过滤查询和恢复
   # --host 统一设成 homelab，避免容器主机名变化导致快照分组混乱
   if run_restic backup \
       --tag "app:${name}" \
       --host homelab \
-      "${exclude_args[@]}" \
+      --exclude '*.sock' \
+      --exclude '*.pid' \
       "${targets[@]}" 2>&1 | sed 's/^/    /'; then
     ok "  ${name} 备份完成"
     SUCCEEDED+=("$name")
@@ -165,14 +148,14 @@ if [[ $PRUNE_ONLY -eq 0 ]]; then
 
   entry=""
   for entry in "${app_list[@]}"; do
-    IFS='|' read -r dir name pgdb paths excludes <<< "$entry"
+    IFS='|' read -r dir name pgdb paths <<< "$entry"
     [[ -n "$name" ]] || continue
     # 有过滤条件时只备份匹配的
     if [[ -n "$FILTER" ]]; then
       [[ "$name" == *"$FILTER"* ]] || continue
     fi
     found=1
-    backup_app "$dir" "$name" "$pgdb" "$paths" "$excludes"
+    backup_app "$dir" "$name" "$pgdb" "$paths"
     echo
   done
 
@@ -185,8 +168,7 @@ if [[ $PRUNE_ONLY -eq 0 ]]; then
     labels:
       homelab.backup.enable: \"true\"
       homelab.backup.paths: \"./data\"
-      homelab.backup.pg-db: \"\${DB_NAME}\"     # 用 pg 的应用才需要
-      homelab.backup.exclude: \"cache/,*.tmp\"   # 排除不重要的文件（可选）"
+      homelab.backup.pg-db: \"\${DB_NAME}\"   # 用 pg 的应用才需要"
     fi
   fi
 fi
