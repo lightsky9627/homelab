@@ -144,9 +144,11 @@ discover_apps() {
 
     local name; name="$(basename "$d")"
     # 从 yaml 里抓标签值（简单 grep，够用且不引入 yq 依赖）
-    local pgdb paths
+    local pgdb paths excludes
     pgdb="$(grep -oE 'homelab\.backup\.pg-db: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
     paths="$(grep -oE 'homelab\.backup\.paths: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+    # 排除规则：逗号分隔的 glob 模式，用于跳过缓存、缩略图等不重要的文件
+    excludes="$(grep -oE 'homelab\.backup\.exclude: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
 
     # pg 库名如果写的是 ${DB_NAME} 这种变量，从应用 .env 里解析出真实值
     if [[ "$pgdb" == '${'* ]]; then
@@ -154,7 +156,7 @@ discover_apps() {
       pgdb="$(read_env "${d}.env" "$var" 2>/dev/null || echo "")"
     fi
 
-    echo "${d}|${name}|${pgdb}|${paths}"
+    echo "${d}|${name}|${pgdb}|${paths}|${excludes}"
   done
   set -e
 }

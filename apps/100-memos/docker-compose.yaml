@@ -80,3 +80,6 @@ services:
       homelab.backup.enable: "true"
       homelab.backup.pg-db: "${DB_NAME}"
       homelab.backup.paths: "./data/memos"
+      # 排除不重要的文件：逗号分隔的 glob 模式。
+      # 缩略图丢了会自动重生，没必要占备份空间。
+      homelab.backup.exclude: "thumbs/,*.tmp"

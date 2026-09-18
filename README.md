@@ -134,6 +134,47 @@ bin/hl backup now     # 跑一次验证
 bin/hl up backup      # 启动定时调度（默认每天 3:30）
 ```
 
+### 备份范围控制
+
+备份什么、不备份什么，全由应用 `docker-compose.yaml` 里的标签决定：
+
+```yaml
+labels:
+  homelab.backup.enable: "true"            # 开启备份
+  homelab.backup.pg-db: "${DB_NAME}"       # 要 dump 的 pg 库
+  homelab.backup.paths: "./data/memos"     # 要备份的目录（逗号分隔多个）
+  homelab.backup.exclude: "thumbs/,*.tmp"  # 排除规则（逗号分隔）
+```
+
+`exclude` 用来跳过那些丢了也能自动重建的文件。典型场景是 RSS 阅读器：
+数据库里的订阅源和已读状态很重要，但文章全文缓存、封面图动辄几 GB，
+备份它们纯粹浪费钱：
+
+```yaml
+# 以 miniflux / freshrss 这类应用为例
+labels:
+  homelab.backup.enable: "true"
+  homelab.backup.pg-db: "${DB_NAME}"       # 订阅源、已读状态都在库里，必备
+  homelab.backup.paths: "./data"
+  homelab.backup.exclude: "cache/,thumbnails/,icons/,*.log"
+```
+
+支持的写法（就是 restic 的 `--exclude` 语法）：
+
+| 写法 | 含义 |
+|------|------|
+| `cache/` | 排除叫 cache 的目录（任意层级） |
+| `*.tmp` | 排除所有 .tmp 文件 |
+| `*.log` | 排除日志 |
+| `data/cache/**` | 排除指定路径下所有内容 |
+
+改完标签不用重启容器，下次备份自动生效。验证排除是否生效：
+
+```bash
+bin/hl backup now <应用>     # 输出里会列出生效的排除规则
+bin/hl backup list <应用>    # 看快照大小变化
+```
+
 ## 新增应用
 
 ```bash
