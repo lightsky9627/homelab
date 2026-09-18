@@ -14,12 +14,12 @@ homelab/
 │   ├── backup-restore.sh # 查看/恢复备份
 │   └── backup-lib.sh     # 备份公共函数
 ├── infra/                # 基础设施（先启动）
-│   ├── 010-caddy/        # 反向代理 + 自动 HTTPS
-│   ├── 020-postgresql/   # 共享 PostgreSQL
-│   └── 021-mysql/        # 共享 MySQL（按需）
+│   ├── caddy/            # 反向代理 + 自动 HTTPS
+│   ├── postgresql/       # 共享 PostgreSQL
+│   └── mysql/            # 共享 MySQL（按需）
 ├── apps/                 # 应用（依赖基础设施）
-│   ├── 100-memos/        # 笔记服务
-│   └── 110-rustdesk/     # 远程桌面
+│   ├── memos/            # 笔记服务
+│   └── rustdesk/         # 远程桌面
 └── ops/                  # 运维
     ├── watchtower/       # 自动更新镜像
     └── backup/           # 定时备份（restic）
@@ -45,7 +45,7 @@ bin/hl db create memos    # 打印随机密码
 
 # 4. 启动应用
 bin/hl up memos           # 首次会自动创建 .env，提示填密码
-vim apps/100-memos/.env       # 填 DB_PASSWORD
+vim apps/memos/.env       # 填 DB_PASSWORD
 bin/hl up memos
 
 # 5. 加反代
@@ -213,8 +213,8 @@ bin/hl proxy reload
 bin/hl backup now postgresql       # 先备份
 bin/hl down postgresql
 docker exec postgresql pg_dumpall -U homelab > /tmp/pg-all.sql
-rm -rf infra/020-postgresql/data/  # 删旧数据目录
-vim infra/020-postgresql/.env      # POSTGRES_TAG=18-alpine
+rm -rf infra/postgresql/data/  # 删旧数据目录
+vim infra/postgresql/.env      # POSTGRES_TAG=18-alpine
 bin/hl up postgresql               # 新版本初始化空库
 docker exec -i postgresql psql -U homelab < /tmp/pg-all.sql
 ```

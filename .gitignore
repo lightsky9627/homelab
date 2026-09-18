@@ -17,8 +17,8 @@ ops/backup/repo.env
 ops/backup/*.secret
 
 # 4) Caddy 的实际站点配置（含真实域名），只提交模板
-infra/010-caddy/sites/*.caddy
-!infra/010-caddy/sites/example.caddy.disabled
+infra/caddy/sites/*.caddy
+!infra/caddy/sites/example.caddy.disabled
 
 # 5) 杂项
 *.log

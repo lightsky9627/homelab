@@ -53,9 +53,8 @@ die()  { echo "${C_RED}✗ 错误:${C_OFF} $*" >&2; exit 1; }
 # ======================================================================
 
 # 找到应用目录。支持两种写法：
-#   memos              → 短名字模糊匹配目录名
-#   100-memos          → 完整编号目录匹配
-#   apps/100-memos     → 直接给路径
+#   memos              → 直接按应用名匹配
+#   apps/memos         → 直接给路径
 find_app() {
   local q="${1:-}"
   [[ -n "$q" ]] || die "请指定应用名"
@@ -71,8 +70,7 @@ find_app() {
   for d in infra/*/ apps/*/ ops/*/; do
     [[ -f "${d}docker-compose.yaml" ]] || continue
     local name; name="$(basename "$d")"
-    local slug="${name#*-}"
-    if [[ "$name" == "$q" || "$slug" == "$q" ]]; then
+    if [[ "$name" == "$q" ]]; then
       matches+=("$d")
     fi
   done
@@ -121,69 +119,58 @@ ensure_env() {
   fi
 }
 
-# 自动检测并将遗留目录（如未编号目录）里的配置与数据同步到当前有效目录
+# 迁移旧版本（带数字前缀如 020-postgresql）遗留的 .env 和 data/
 migrate_legacy_dir() {
-  local target_dir="$1"
-  # 只有当前目录本身是带 docker-compose.yaml 的有效工程，才作为迁移目标
-  [[ -f "$target_dir/docker-compose.yaml" ]] || return 0
-
-  local rel="${target_dir#$REPO_ROOT/}"
+  local new_dir="$1"
+  local rel="${new_dir#$REPO_ROOT/}"
   rel="${rel%/}"
 
-  local other_rel=""
+  local old_rel=""
   case "$rel" in
-    infra/010-caddy)      other_rel="infra/caddy" ;;
-    infra/020-postgresql) other_rel="infra/postgresql" ;;
-    infra/021-mysql)      other_rel="infra/mysql" ;;
-    apps/100-memos)       other_rel="apps/memos" ;;
-    apps/110-rustdesk)    other_rel="apps/rustdesk" ;;
+    infra/caddy)      old_rel="infra/010-caddy" ;;
+    infra/postgresql) old_rel="infra/020-postgresql" ;;
+    infra/mysql)      old_rel="infra/021-mysql" ;;
+    apps/memos)       old_rel="apps/100-memos" ;;
+    apps/rustdesk)    old_rel="apps/110-rustdesk" ;;
   esac
 
-  [[ -n "$other_rel" ]] || return 0
-  local other_dir="$REPO_ROOT/$other_rel"
-  [[ -d "$other_dir" ]] || return 0
+  [[ -n "$old_rel" ]] || return 0
+  local old_dir="$REPO_ROOT/$old_rel"
+  [[ -d "$old_dir" ]] || return 0
 
   # 1. 迁移 .env 文件
-  if [[ -f "$other_dir/.env" ]]; then
+  if [[ -f "$old_dir/.env" ]]; then
     local need_migrate=0
-    if [[ ! -f "$target_dir/.env" ]]; then
+    if [[ ! -f "$new_dir/.env" ]]; then
       need_migrate=1
-    elif grep -q "CHANGE_ME" "$target_dir/.env" && ! grep -q "CHANGE_ME" "$other_dir/.env"; then
+    elif grep -q "CHANGE_ME" "$new_dir/.env" && ! grep -q "CHANGE_ME" "$old_dir/.env"; then
+      # 新目录是刚刚根据模板自动生成的，而老目录是用户已经填写好真实密钥的
       need_migrate=1
     fi
 
     if [[ $need_migrate -eq 1 ]]; then
-      cp -p "$other_dir/.env" "$target_dir/.env"
-      chmod 600 "$target_dir/.env"
-      ok "已自动同步配置文件: $other_rel/.env -> $rel/.env"
-      rm -f "$other_dir/.env"
+      cp -p "$old_dir/.env" "$new_dir/.env"
+      chmod 600 "$new_dir/.env"
+      ok "检测到旧目录存在配置文件，已自动恢复: $old_rel/.env -> $rel/.env"
     fi
   fi
 
   # 2. 迁移 data/ 目录
-  if [[ -d "$other_dir/data" ]]; then
-    if [[ ! -d "$target_dir/data" ]]; then
-      mv "$other_dir/data" "$target_dir/data"
-      ok "已自动同步应用数据: $other_rel/data -> $rel/data"
-    fi
+  if [[ -d "$old_dir/data" && ! -d "$new_dir/data" ]]; then
+    mv "$old_dir/data" "$new_dir/data"
+    ok "检测到旧目录存在应用数据，已自动迁移: $old_rel/data -> $rel/data"
   fi
 
   # 3. 迁移 caddy sites/ 目录配置
-  if [[ -d "$other_dir/sites" ]]; then
+  if [[ "$rel" == "infra/caddy" && -d "$old_dir/sites" ]]; then
     local site_file
-    for site_file in "$other_dir"/sites/*.caddy; do
+    for site_file in "$old_dir"/sites/*.caddy; do
       [[ -f "$site_file" ]] || continue
-      mkdir -p "$target_dir/sites"
-      mv "$site_file" "$target_dir/sites/"
-      ok "已自动同步反代配置: $(basename "$site_file")"
+      mkdir -p "$new_dir/sites"
+      mv "$site_file" "$new_dir/sites/"
+      ok "已自动迁移反代配置: $(basename "$site_file")"
     done
   fi
-
-  # 清理遗留目录残留的 example 和空目录
-  rm -f "$other_dir/.env.example" "$other_dir/.env" 2>/dev/null || true
-  rmdir "$other_dir/sites" 2>/dev/null || true
-  rmdir "$other_dir/data" 2>/dev/null || true
-  rmdir "$other_dir" 2>/dev/null || true
 }
 
 # 确保全局 .env 存在
@@ -361,7 +348,7 @@ cmd_ports() {
   done
 
   # Caddy 是 host 网络直接绑 80/443，不走 .env 变量，单独列
-  printf '%-22s %-10s ' "010-caddy" "80,443"
+  printf '%-22s %-10s ' "caddy" "80,443"
   if ss -ltn 2>/dev/null | grep -qE '[:.]443\s'; then
     echo "${C_GRN}监听中${C_OFF}"
   else
@@ -373,7 +360,7 @@ cmd_ports() {
 #  proxy —— Caddy 反向代理管理
 # ======================================================================
 
-CADDY_DIR="$REPO_ROOT/infra/010-caddy"
+CADDY_DIR="$REPO_ROOT/infra/caddy"
 
 cmd_proxy() {
   local sub="${1:-list}"; shift || true
@@ -482,7 +469,7 @@ db_create() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "用法: hl db create <名字>   例如: hl db create memos"
 
-  local pgdir="$REPO_ROOT/infra/020-postgresql"
+  local pgdir="$REPO_ROOT/infra/postgresql"
   local pass; pass="$(gen_pass)"
 
   info "在共享 PostgreSQL 里创建库和账号: $name"
@@ -510,7 +497,7 @@ EOF
 }
 
 db_list() {
-  local pgdir="$REPO_ROOT/infra/020-postgresql"
+  local pgdir="$REPO_ROOT/infra/postgresql"
   local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
   # \l+ 列出所有库，带大小信息
   compose "$pgdir" exec -T postgresql psql -U "$pguser" -c "
@@ -523,7 +510,7 @@ db_list() {
 }
 
 db_shell() {
-  local pgdir="$REPO_ROOT/infra/020-postgresql"
+  local pgdir="$REPO_ROOT/infra/postgresql"
   local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
   local db="${1:-$(read_env "$pgdir/.env" POSTGRES_DB)}"
   compose "$pgdir" exec postgresql psql -U "$pguser" -d "$db"
@@ -563,7 +550,7 @@ cmd_rustdesk() {
   local sub="${1:-key}"
   case "$sub" in
     key)
-      local f="$REPO_ROOT/apps/110-rustdesk/data/id_ed25519.pub"
+      local f="$REPO_ROOT/apps/rustdesk/data/id_ed25519.pub"
       [[ -f "$f" ]] || die "公钥还没生成，先执行 hl up rustdesk 启动服务"
       echo "客户端配置里的 Key 填这个："
       echo "${C_YEL}$(cat "$f")${C_OFF}"

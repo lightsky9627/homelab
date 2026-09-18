@@ -1,7 +1,7 @@
 # ======================================================================
 #  Memos —— 轻量级笔记 / 备忘服务
 #
-#  数据库策略：用 infra/020-postgresql 那个共享实例，不自己起一个 pg。
+#  数据库策略：用 infra/postgresql 那个共享实例，不自己起一个 pg。
 #  好处是只有一份数据库要备份、要调优、要升级。
 #
 #  首次使用前，需要在共享 pg 里给 memos 建一个独立的库和账号：
@@ -16,7 +16,7 @@
 name: memos
 
 # 加入共享数据库的网络。
-# external: true 表示这个网络由 infra/020-postgresql 创建，这里只是接进去，
+# external: true 表示这个网络由 infra/postgresql 创建，这里只是接进去，
 # 所以必须先启动 postgresql，memos 才能起来。
 networks:
   db:
