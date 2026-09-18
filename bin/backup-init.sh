@@ -76,103 +76,25 @@ B2_ID=""; B2_KEY=""
 case "$BACKEND" in
   1)
     echo
-    echo "${C_DIM}只填服务地址（Endpoint），不要带 bucket 名，下一步单独问。${C_OFF}"
+    echo "${C_DIM}常见 Endpoint 格式：${C_OFF}"
+    echo "${C_DIM}  AWS S3:        https://s3.<region>.amazonaws.com/<bucket>/<路径>${C_OFF}"
+    echo "${C_DIM}  阿里云 OSS:    https://oss-cn-hangzhou.aliyuncs.com/<bucket>/<路径>${C_OFF}"
+    echo "${C_DIM}  腾讯云 COS:    https://cos.ap-guangzhou.myqcloud.com/<bucket>/<路径>${C_OFF}"
+    echo "${C_DIM}  Cloudflare R2: https://<account_id>.r2.cloudflarestorage.com/<bucket>${C_OFF}"
+    echo "${C_DIM}  MinIO 自建:    https://minio.example.com/<bucket>/<路径>${C_OFF}"
     echo
-    echo "${C_DIM}  AWS S3:        s3.us-east-1.amazonaws.com${C_OFF}"
-    echo "${C_DIM}  阿里云 OSS:    oss-cn-hangzhou.aliyuncs.com${C_OFF}"
-    echo "${C_DIM}  腾讯云 COS:    cos.ap-guangzhou.myqcloud.com${C_OFF}"
-    echo "${C_DIM}  Cloudflare R2: <account_id>.r2.cloudflarestorage.com${C_OFF}"
-    echo "${C_DIM}  MinIO 自建:    minio.example.com${C_OFF}"
-    echo
-    ENDPOINT="$(ask "Endpoint 域名")"
-    [[ -n "$ENDPOINT" ]] || die "Endpoint 不能为空"
-
-    # 把用户可能粘贴的 https:// 前缀和末尾斜杠剪掉，统一成纯域名，
-    # 后面拼 URL 时才不会出现 https://https:// 这种错误。
-    SCHEME="https"
-    case "$ENDPOINT" in
-      http://*)  SCHEME="http";  ENDPOINT="${ENDPOINT#http://}"  ;;
-      https://*) SCHEME="https"; ENDPOINT="${ENDPOINT#https://}" ;;
-    esac
-    ENDPOINT="${ENDPOINT%%/*}"   # 删掉第一个 / 及之后的所有内容
-
-    # ---- bucket 单独问，这是之前漏掉导致报错的地方 ----
-    BUCKET="$(ask "Bucket 名称")"
-    [[ -n "$BUCKET" ]] || die "Bucket 名不能为空"
-
-    # 腾讯云 COS 的 bucket 必须带 APPID 后缀，很多人会忘
-    if [[ "$ENDPOINT" == *myqcloud.com ]] && [[ "$BUCKET" != *-[0-9]* ]]; then
-      warn "腾讯云 COS 的 bucket 名通常形如 mybucket-1250000000（带 APPID）"
-      ask_yn "确定 '${BUCKET}' 是完整名称？" "y" || die "请重新运行并填完整 bucket 名"
-    fi
-
-    PREFIX="$(ask "仓库在 bucket 内的路径前缀（留空则放根目录）" "homelab")"
-
-    # ---- 寻址风格 ----
-    echo
-    echo "${C_DIM}寻址风格决定 bucket 写在 URL 的哪个位置：${C_OFF}"
-    echo "${C_DIM}  虚拟主机风格：${BUCKET}.${ENDPOINT}/${PREFIX}${C_OFF}"
-    echo "${C_DIM}  路径风格：    ${ENDPOINT}/${BUCKET}/${PREFIX}${C_OFF}"
-    echo
-    echo "  1) 虚拟主机风格（推荐）"
-    echo "     主流云厂商都用这个：AWS S3 / 阿里云 OSS / 腾讯云 COS / Cloudflare R2"
-    echo "  2) 路径风格"
-    echo "     自建 MinIO / Ceph 等多数默认这个，AWS 已官方弃用"
-    echo
-
-    # 根据 endpoint 自动猜一个默认值，减少用户选错的概率
-    STYLE_DEFAULT="1"
-    case "$ENDPOINT" in
-      *amazonaws.com|*aliyuncs.com|*myqcloud.com|*r2.cloudflarestorage.com)
-        STYLE_DEFAULT="1" ;;
-      *)
-        # 自建的服务（MinIO 等）大多数是路径风格
-        STYLE_DEFAULT="2" ;;
-    esac
-
-    STYLE="$(ask "选择 (1-2)" "$STYLE_DEFAULT")"
-
-    # 拼接仓库 URL。注意 PREFIX 可能为空，要避免出现末尾多余的斜杠。
-    if [[ "$STYLE" == "1" ]]; then
-      # 虚拟主机风格：bucket 作为域名的一部分
-      if [[ -n "$PREFIX" ]]; then
-        REPO_URL="s3:${SCHEME}://${BUCKET}.${ENDPOINT}/${PREFIX}"
-      else
-        REPO_URL="s3:${SCHEME}://${BUCKET}.${ENDPOINT}"
-      fi
-    else
-      # 路径风格：bucket 作为路径的第一段
-      if [[ -n "$PREFIX" ]]; then
-        REPO_URL="s3:${SCHEME}://${ENDPOINT}/${BUCKET}/${PREFIX}"
-      else
-        REPO_URL="s3:${SCHEME}://${ENDPOINT}/${BUCKET}"
-      fi
-    fi
-
-    echo
-    info "仓库地址: ${C_YEL}${REPO_URL}${C_OFF}"
-
+    ENDPOINT="$(ask "S3 地址 (不含 s3: 前缀)")"
+    [[ -n "$ENDPOINT" ]] || die "地址不能为空"
+    REPO_URL="s3:${ENDPOINT}"
     AWS_KEY="$(ask "Access Key ID")"
-    [[ -n "$AWS_KEY" ]] || die "Access Key 不能为空"
     AWS_SECRET="$(ask_secret "Secret Access Key")"
-    [[ -n "$AWS_SECRET" ]] || die "Secret Key 不能为空"
     ;;
   2)
     BUCKET="$(ask "B2 Bucket 名")"
-    [[ -n "$BUCKET" ]] || die "Bucket 名不能为空"
     PREFIX="$(ask "路径前缀" "homelab")"
-    # b2 的格式是 b2:<bucket>:<path>，path 为空时连冒号一起省掉
-    if [[ -n "$PREFIX" ]]; then
-      REPO_URL="b2:${BUCKET}:${PREFIX}"
-    else
-      REPO_URL="b2:${BUCKET}"
-    fi
+    REPO_URL="b2:${BUCKET}:${PREFIX}"
     B2_ID="$(ask "B2 Account ID / keyID")"
-    [[ -n "$B2_ID" ]] || die "Account ID 不能为空"
     B2_KEY="$(ask_secret "B2 Application Key")"
-    [[ -n "$B2_KEY" ]] || die "Application Key 不能为空"
-    echo
-    info "仓库地址: ${C_YEL}${REPO_URL}${C_OFF}"
     ;;
   3)
     REPO_URL="$(ask "本地目录绝对路径" "/mnt/backup/homelab")"
@@ -289,54 +211,17 @@ ok "配置已写入 ops/backup/repo.env (权限 600)"
 
 # ---- 初始化 restic 仓库 ----
 echo
-info "检查仓库状态（最多等 30 秒）"
+info "检查仓库状态"
 setup_local_mount
 
-# 用 timeout 包住，避免地址写错时卡在网络超时上干等。
-# 返回 124 = timeout 杀掉了进程，说明网络不通或地址不对。
-set +e
-timeout 30 bash -c 'source "$0"; run_restic cat config' "${BASH_SOURCE[0]%/*}/backup-lib.sh" >/dev/null 2>&1
-CHECK_RC=$?
-set -e
-
-if [[ $CHECK_RC -eq 124 ]]; then
-  echo
-  warn "连接超时，可能是 Endpoint 写错或网络不通"
-  echo "  当前地址: ${C_YEL}${REPO_URL}${C_OFF}"
-  echo
-  ask_yn "仍然尝试初始化？" "y" || die "已取消，配置保留在 ops/backup/repo.env"
-  CHECK_RC=1
-fi
-
-if [[ $CHECK_RC -eq 0 ]]; then
+if run_restic cat config >/dev/null 2>&1; then
   ok "仓库已存在且密码正确，直接复用"
 else
   info "仓库不存在，正在初始化"
   if run_restic init; then
     ok "仓库初始化完成"
   else
-    echo
-    echo "${C_RED}初始化失败。常见原因：${C_OFF}"
-    echo
-    echo "  • ${C_YEL}Bucket name cannot be empty${C_OFF}"
-    echo "    仓库地址里没包含 bucket，重新运行向导并填写 Bucket 名称"
-    echo
-    echo "  • ${C_YEL}寻址风格选错${C_OFF}"
-    echo "    试试另一种风格。当前地址：${REPO_URL}"
-    echo
-    echo "  • ${C_YEL}bucket 不存在${C_OFF}"
-    echo "    restic 不会自动建 bucket，要先在控制台手动创建"
-    echo
-    echo "  • ${C_YEL}腾讯云 COS 忘带 APPID${C_OFF}"
-    echo "    bucket 名必须写完整，如 mybucket-1250000000"
-    echo
-    echo "  • ${C_YEL}密钥权限不足${C_OFF}"
-    echo "    需要读写权限，只读密钥无法初始化"
-    echo
-    echo "${C_DIM}配置已保留在 ops/backup/repo.env，可直接编辑后重试：${C_OFF}"
-    echo "${C_DIM}  vim ops/backup/repo.env${C_OFF}"
-    echo "${C_DIM}  bin/hl backup init${C_OFF}"
-    exit 1
+    die "初始化失败。请检查：地址是否正确、密钥是否有权限、bucket 是否已创建"
   fi
 fi
 
