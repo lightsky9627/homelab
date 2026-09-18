@@ -25,16 +25,19 @@ _hl_completions() {
     repo_root="$HOMELAB_ROOT"
   fi
 
-  # 获取所有可用服务的列表（caddy, postgresql, memos, rustdesk...）
+  # 获取所有可用服务的列表（既提供短名字如 memos，也提供编号全名如 100-memos）
   _hl_list_services() {
     if [[ -n "$repo_root" && -d "$repo_root" ]]; then
       local d
       for d in "$repo_root"/infra/*/ "$repo_root"/apps/*/ "$repo_root"/ops/*/; do
         [[ -f "${d}docker-compose.yaml" ]] || continue
-        basename "$d"
+        local name; name="$(basename "$d")"
+        local slug="${name#*-}"
+        echo "$name"
+        [[ "$name" != "$slug" ]] && echo "$slug"
       done
     else
-      echo "caddy postgresql mysql memos rustdesk watchtower backup"
+      echo "caddy 010-caddy postgresql 020-postgresql mysql 021-mysql memos 100-memos rustdesk 110-rustdesk watchtower backup"
     fi
   }
 
@@ -66,9 +69,9 @@ _hl_completions() {
         COMPREPLY=($(compgen -W "add list reload remove cat" -- "$cur"))
       elif [[ $cword -eq 3 && "${words[2]}" =~ ^(remove|cat)$ ]]; then
         # 补全现有的代理站点
-        if [[ -n "$repo_root" && -d "$repo_root/infra/caddy/sites" ]]; then
+        if [[ -n "$repo_root" && -d "$repo_root/infra/010-caddy/sites" ]]; then
           local sites
-          sites="$(cd "$repo_root/infra/caddy/sites" 2>/dev/null && ls *.caddy 2>/dev/null | sed 's/\.caddy$//' || true)"
+          sites="$(cd "$repo_root/infra/010-caddy/sites" 2>/dev/null && ls *.caddy 2>/dev/null | sed 's/\.caddy$//' || true)"
           COMPREPLY=($(compgen -W "$sites" -- "$cur"))
         fi
       fi

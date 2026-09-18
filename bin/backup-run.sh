@@ -109,7 +109,7 @@ backup_app() {
     # 用 pg_dump 导出。注意这里连的是共享 pg 容器。
     # -Fc 是自定义格式（支持并行恢复、单表恢复），但为了可读性和通用性
     # 这里用纯 SQL + gzip，恢复时直接 psql < 就行。
-    local pgdir="$REPO_ROOT/infra/postgresql"
+    local pgdir="$REPO_ROOT/infra/020-postgresql"
     local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
 
     if docker exec postgresql pg_dump -U "$pguser" -d "$pgdb" 2>/dev/null | gzip > "$dumpfile"; then
@@ -242,7 +242,7 @@ if [[ $PRUNE_ONLY -eq 0 ]]; then
 
     # bin/ 里的脚本和反代站点配置也一并带上
     [[ -d "$REPO_ROOT/bin" ]] && conf_targets+=("/data/bin")
-    [[ -d "$REPO_ROOT/infra/caddy/sites" ]] && conf_targets+=("/data/infra/caddy/sites")
+    [[ -d "$REPO_ROOT/infra/010-caddy/sites" ]] && conf_targets+=("/data/infra/010-caddy/sites")
 
     if [[ ${#conf_targets[@]} -gt 0 ]]; then
       echo "    文件数: ${#conf_targets[@]}"
