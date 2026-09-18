@@ -53,11 +53,3 @@ services:
     labels:
       # 允许 watchtower 自动更新这个容器（无状态，升级安全）
       com.centurylinklabs.watchtower.enable: "true"
-
-      # 备份反代配置和证书。
-      # data/caddy 里是 Let's Encrypt 签发的证书和私钥，
-      # 恢复时带上它就不用重新签发，避开 LE 的频率限制（每周 5 次）。
-      homelab.backup.enable: "true"
-      homelab.backup.paths: "./Caddyfile,./sites,./data/caddy"
-      # locks 是运行时锁，ocsp 缓存会自动重建，都不用备
-      homelab.backup.exclude: "locks/,ocsp/"

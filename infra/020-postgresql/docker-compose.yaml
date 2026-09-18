@@ -74,17 +74,7 @@ services:
     labels:
       # 明确【关闭】自动更新，理由见文件开头
       com.centurylinklabs.watchtower.enable: "false"
-      # 备份模块靠这些标签自动发现，见 ops/backup/
+      # 备份模块靠这两个标签自动发现要备份哪些库，见 ops/backup/
       homelab.backup.type: "postgres"
       homelab.backup.db: "${POSTGRES_DB}"
       homelab.backup.user: "${POSTGRES_USER}"
-
-      # 开启备份。这里用 pg-dump-all 而不是 pg-db：
-      # 单库 dump 只能救回表结构和数据，救不回角色和密码。
-      # pg_dumpall 会把所有库 + 用户/权限一起导出，
-      # 这样换台机器恢复时不用手动重建一堆账号。
-      homelab.backup.enable: "true"
-      homelab.backup.pg-dump-all: "true"
-      # 数据目录不备：有 dump 就够了，而且直接拷 PGDATA
-      # 在数据库运行时是不一致的，恢复出来可能损坏。
-      homelab.backup.paths: ""

@@ -5,28 +5,26 @@
 #  设计原则：所有日常操作一条命令搞定，不用记 docker compose 的参数。
 #
 #  用法总览：
-#    hl up <服务...> [--all]   启动指定服务（或 --all 启动全部）
-#    hl down <服务...> [--all] 停止指定服务（或 --all 停止全部）
-#    hl restart <服务...>      重启
-#    hl logs <服务>            看日志
-#    hl ps                     列出所有服务状态
-#    hl ports                  端口占用总览
+#    hl up <应用>          启动（自动创建 .env、拉镜像）
+#    hl down <应用>        停止
+#    hl restart <应用>     重启
+#    hl logs <应用>        看日志
+#    hl ps                 列出所有应用状态
+#    hl ports              端口占用总览
 #
 #    hl proxy add <名字> <端口>   加一条反代（自动申请证书）
 #    hl proxy list               列出所有反代
 #    hl proxy reload             热加载 Caddy 配置
 #
 #    hl db create <名字>          在共享 pg 里建库和账号（随机密码）
-#    hl db list                  列出所有数据库
-#    hl db shell [库名]          进入 psql
 #
 #    hl backup init              交互式配置备份
-#    hl backup now [服务]        立即备份
-#    hl backup list [服务]       查看快照列表
+#    hl backup now [应用]        立即备份
+#    hl backup list [应用]       查看快照列表
 #    hl backup restore           交互式恢复
 #    hl backup stats             空间占用统计
 #
-#  「服务」直接写名字即可（如 memos、caddy、postgresql）。
+#  「应用」可以写目录名（memos）或带路径（apps/100-memos），会自动查找。
 # ======================================================================
 
 set -euo pipefail
@@ -52,9 +50,10 @@ die()  { echo "${C_RED}✗ 错误:${C_OFF} $*" >&2; exit 1; }
 #  工具函数
 # ======================================================================
 
-# 找到应用目录。支持两种写法：
-#   memos              → 直接按应用名匹配
-#   apps/memos         → 直接给路径
+# 找到应用目录。支持三种写法：
+#   memos              → 模糊匹配目录名
+#   100-memos          → 精确匹配
+#   apps/100-memos     → 直接给路径
 find_app() {
   local q="${1:-}"
   [[ -n "$q" ]] || die "请指定应用名"
@@ -64,13 +63,15 @@ find_app() {
     (cd "$q" && pwd); return
   fi
 
-  # 情况 2：在 infra/ apps/ ops/ 下面找匹配的
+  # 情况 2/3：在 infra/ apps/ ops/ 下面找匹配的
   local matches=()
   local d
   for d in infra/*/ apps/*/ ops/*/; do
     [[ -f "${d}docker-compose.yaml" ]] || continue
     local name; name="$(basename "$d")"
-    if [[ "$name" == "$q" ]]; then
+    # 去掉 NNN- 前缀后的纯名字，例如 100-memos → memos
+    local slug="${name#*-}"
+    if [[ "$name" == "$q" || "$slug" == "$q" ]]; then
       matches+=("$d")
     fi
   done
@@ -140,28 +141,9 @@ gen_pass() { openssl rand -hex 24; }
 
 cmd_up() {
   ensure_root_env
-  local targets=()
-
-  # 检查参数：不传参数时拒绝默认全起，列出可用服务并提示
-  if [[ $# -eq 0 ]]; then
-    echo "用法: hl up <服务名...> 或 hl up --all"
-    echo
-    echo "可用服务："
-    echo "  infra:  $(cd "$REPO_ROOT" && ls -d infra/*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
-    echo "  apps:   $(cd "$REPO_ROOT" && ls -d apps/*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
-    echo "  ops:    $(cd "$REPO_ROOT" && ls -d ops/*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
-    echo
-    echo "示例："
-    echo "  hl up caddy postgresql memos    # 启动指定服务"
-    echo "  hl up --all                     # 启动全部服务"
-    exit 1
-  fi
-
-  if [[ "$1" == "--all" || "$1" == "-a" ]]; then
-    mapfile -t targets < <(list_apps)
-  else
-    targets=("$@")
-  fi
+  local targets=("$@")
+  # 不给参数就启动全部
+  [[ ${#targets[@]} -gt 0 ]] || mapfile -t targets < <(list_apps)
 
   local t
   for t in "${targets[@]}"; do
@@ -181,19 +163,8 @@ cmd_up() {
 }
 
 cmd_down() {
-  local targets=()
-  if [[ $# -eq 0 ]]; then
-    echo "用法: hl down <服务名...> 或 hl down --all"
-    echo "示例: hl down memos 或 hl down --all"
-    exit 1
-  fi
-
-  if [[ "$1" == "--all" || "$1" == "-a" ]]; then
-    mapfile -t targets < <(list_apps)
-  else
-    targets=("$@")
-  fi
-
+  local targets=("$@")
+  [[ ${#targets[@]} -gt 0 ]] || mapfile -t targets < <(list_apps)
   local t
   for t in "${targets[@]}"; do
     local dir; dir="$(find_app "$t")"
@@ -279,7 +250,7 @@ cmd_ports() {
   done
 
   # Caddy 是 host 网络直接绑 80/443，不走 .env 变量，单独列
-  printf '%-22s %-10s ' "caddy" "80,443"
+  printf '%-22s %-10s ' "010-caddy" "80,443"
   if ss -ltn 2>/dev/null | grep -qE '[:.]443\s'; then
     echo "${C_GRN}监听中${C_OFF}"
   else
@@ -291,7 +262,7 @@ cmd_ports() {
 #  proxy —— Caddy 反向代理管理
 # ======================================================================
 
-CADDY_DIR="$REPO_ROOT/infra/caddy"
+CADDY_DIR="$REPO_ROOT/infra/010-caddy"
 
 cmd_proxy() {
   local sub="${1:-list}"; shift || true
@@ -400,7 +371,7 @@ db_create() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "用法: hl db create <名字>   例如: hl db create memos"
 
-  local pgdir="$REPO_ROOT/infra/postgresql"
+  local pgdir="$REPO_ROOT/infra/020-postgresql"
   local pass; pass="$(gen_pass)"
 
   info "在共享 PostgreSQL 里创建库和账号: $name"
@@ -428,7 +399,7 @@ EOF
 }
 
 db_list() {
-  local pgdir="$REPO_ROOT/infra/postgresql"
+  local pgdir="$REPO_ROOT/infra/020-postgresql"
   local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
   # \l+ 列出所有库，带大小信息
   compose "$pgdir" exec -T postgresql psql -U "$pguser" -c "
@@ -441,7 +412,7 @@ db_list() {
 }
 
 db_shell() {
-  local pgdir="$REPO_ROOT/infra/postgresql"
+  local pgdir="$REPO_ROOT/infra/020-postgresql"
   local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
   local db="${1:-$(read_env "$pgdir/.env" POSTGRES_DB)}"
   compose "$pgdir" exec postgresql psql -U "$pguser" -d "$db"
@@ -481,52 +452,12 @@ cmd_rustdesk() {
   local sub="${1:-key}"
   case "$sub" in
     key)
-      local f="$REPO_ROOT/apps/rustdesk/data/id_ed25519.pub"
+      local f="$REPO_ROOT/apps/110-rustdesk/data/id_ed25519.pub"
       [[ -f "$f" ]] || die "公钥还没生成，先执行 hl up rustdesk 启动服务"
       echo "客户端配置里的 Key 填这个："
       echo "${C_YEL}$(cat "$f")${C_OFF}"
       ;;
     *) die "用法: hl rustdesk key" ;;
-  esac
-}
-
-# ======================================================================
-#  completion —— Shell 自动补全
-# ======================================================================
-
-cmd_completion() {
-  local sub="${1:-show}"
-  local comp_file="$REPO_ROOT/bin/hl-completion.bash"
-  case "$sub" in
-    install)
-      # 尝试安装到 ~/.bashrc 或 /etc/bash_completion.d/
-      local target_rc="$HOME/.bashrc"
-      local source_line="source \"$comp_file\""
-      if [[ -f "$target_rc" ]]; then
-        if grep -q "hl-completion.bash" "$target_rc"; then
-          ok "已在 $target_rc 中配置过补全"
-        else
-          echo "" >> "$target_rc"
-          echo "# homelab hl 命令自动补全" >> "$target_rc"
-          echo "$source_line" >> "$target_rc"
-          ok "已将补全注入 $target_rc"
-          info "请执行: source $target_rc 使其生效"
-        fi
-      else
-        die "找不到 $target_rc，请手动执行: source $comp_file"
-      fi
-      ;;
-    show|cat)
-      cat "$comp_file"
-      ;;
-    *)
-      cat <<'EOF'
-补全助手用法：
-  hl completion install    自动将 Tab 补全脚本写入 ~/.bashrc
-  hl completion show       输出补全脚本内容
-  source bin/hl-completion.bash   临时在当前终端生效
-EOF
-      ;;
   esac
 }
 
@@ -556,7 +487,6 @@ main() {
     db)       cmd_db "$@" ;;
     backup)   cmd_backup "$@" ;;
     rustdesk) cmd_rustdesk "$@" ;;
-    completion) cmd_completion "$@" ;;
     help|-h|--help) cmd_help ;;
     *) die "未知命令 '$cmd'，执行 hl help 查看用法" ;;
   esac

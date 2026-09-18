@@ -47,60 +47,13 @@ SUCCEEDED=()
 # ======================================================================
 backup_app() {
   local dir="$1" name="$2" pgdb="$3" paths="$4" excludes="${5:-}"
-  local dumpall="${6:-}" mysqldumpall="${7:-}"
 
   info "备份 ${C_YEL}${name}${C_OFF}"
 
   # 这个应用要交给 restic 的所有路径（容器内视角，都在 /data 下）
   local targets=()
 
-  # ---- 0) 全库 dump（数据库本体的备份）----
-  # pg_dumpall / mysqldump --all-databases 会连用户、权限一起导出，
-  # 比逐库 dump 更适合灾难恢复（换台机器不用手建账号）。
-  if [[ "$dumpall" == "true" ]]; then
-    mkdir -p "$DUMP_DIR"
-    local allfile="$DUMP_DIR/${name}-all-databases.sql.gz"
-    echo "    导出全部 PostgreSQL 库和角色"
-
-    local pguser; pguser="$(read_env "${dir}.env" POSTGRES_USER 2>/dev/null || echo postgres)"
-    if docker exec postgresql pg_dumpall -U "$pguser" 2>/dev/null | gzip > "$allfile"; then
-      if [[ -s "$allfile" ]] && [[ $(stat -c%s "$allfile") -gt 100 ]]; then
-        echo "    dump 大小: $(human_size "$(stat -c%s "$allfile")")"
-        targets+=("/data/ops/backup/.dumps/$(basename "$allfile")")
-      else
-        warn "    dump 文件异常（太小），跳过"
-        rm -f "$allfile"
-      fi
-    else
-      warn "    pg_dumpall 失败（PostgreSQL 容器在运行吗？）"
-      rm -f "$allfile"
-    fi
-  fi
-
-  if [[ "$mysqldumpall" == "true" ]]; then
-    mkdir -p "$DUMP_DIR"
-    local myfile="$DUMP_DIR/${name}-all-databases.sql.gz"
-    echo "    导出全部 MySQL 库和账号"
-
-    local mypass; mypass="$(read_env "${dir}.env" MYSQL_ROOT_PASSWORD 2>/dev/null || echo "")"
-    # --single-transaction 让 InnoDB 在不锁表的情况下拿到一致快照
-    if docker exec -e MYSQL_PWD="$mypass" mysql \
-         mysqldump -u root --all-databases --single-transaction \
-         --routines --events 2>/dev/null | gzip > "$myfile"; then
-      if [[ -s "$myfile" ]] && [[ $(stat -c%s "$myfile") -gt 100 ]]; then
-        echo "    dump 大小: $(human_size "$(stat -c%s "$myfile")")"
-        targets+=("/data/ops/backup/.dumps/$(basename "$myfile")")
-      else
-        warn "    dump 文件异常（太小），跳过"
-        rm -f "$myfile"
-      fi
-    else
-      warn "    mysqldump 失败（MySQL 容器在运行吗？）"
-      rm -f "$myfile"
-    fi
-  fi
-
-  # ---- 1) 单库 dump（应用声明自己用哪个库）----
+  # ---- 1) 数据库 dump ----
   if [[ -n "$pgdb" ]]; then
     mkdir -p "$DUMP_DIR"
     local dumpfile="$DUMP_DIR/${name}-${pgdb}.sql.gz"
@@ -109,7 +62,7 @@ backup_app() {
     # 用 pg_dump 导出。注意这里连的是共享 pg 容器。
     # -Fc 是自定义格式（支持并行恢复、单表恢复），但为了可读性和通用性
     # 这里用纯 SQL + gzip，恢复时直接 psql < 就行。
-    local pgdir="$REPO_ROOT/infra/postgresql"
+    local pgdir="$REPO_ROOT/infra/020-postgresql"
     local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
 
     if docker exec postgresql pg_dump -U "$pguser" -d "$pgdb" 2>/dev/null | gzip > "$dumpfile"; then
@@ -157,7 +110,6 @@ backup_app() {
     warn "    没有可备份的内容，跳过"
     return 0
   fi
-
 
   # ---- 4) 组装排除规则 ----
   # 先放通用的：套接字和 pid 文件备份了也没意义，而且可能导致 restic 报错。
@@ -213,53 +165,16 @@ if [[ $PRUNE_ONLY -eq 0 ]]; then
 
   entry=""
   for entry in "${app_list[@]}"; do
-    IFS='|' read -r dir name pgdb paths excludes dumpall mysqldumpall <<< "$entry"
+    IFS='|' read -r dir name pgdb paths excludes <<< "$entry"
     [[ -n "$name" ]] || continue
     # 有过滤条件时只备份匹配的
     if [[ -n "$FILTER" ]]; then
       [[ "$name" == *"$FILTER"* ]] || continue
     fi
     found=1
-    backup_app "$dir" "$name" "$pgdb" "$paths" "$excludes" "$dumpall" "$mysqldumpall"
+    backup_app "$dir" "$name" "$pgdb" "$paths" "$excludes"
     echo
   done
-
-  # ---- 配置快照 ----
-  # 单独备份全仓库的 .env 和 compose 文件，不依赖任何应用标签。
-  # 为什么单独做：.env 里是数据库密码、API key 这些东西，
-  # 没它们就算数据库 dump 救回来了也跑不起来。
-  # 而且它们被 .gitignore 排除，不在任何 git 仓库里，丢了就真没了。
-  if [[ -z "$FILTER" ]]; then
-    info "备份 ${C_YEL}配置文件${C_OFF}"
-
-    # 找出所有 .env（含密码）和 compose 文件（含编排结构）
-    conf_targets=()
-    while IFS= read -r f; do
-      [[ -n "$f" ]] && conf_targets+=("/data/${f#$REPO_ROOT/}")
-    done < <(find "$REPO_ROOT" \
-               \( -name '.env' -o -name 'docker-compose.yaml' -o -name 'Caddyfile' \) \
-               -not -path '*/data/*' -not -path '*/.git/*' 2>/dev/null | sort)
-
-    # bin/ 里的脚本和反代站点配置也一并带上
-    [[ -d "$REPO_ROOT/bin" ]] && conf_targets+=("/data/bin")
-    [[ -d "$REPO_ROOT/infra/caddy/sites" ]] && conf_targets+=("/data/infra/caddy/sites")
-
-    if [[ ${#conf_targets[@]} -gt 0 ]]; then
-      echo "    文件数: ${#conf_targets[@]}"
-      if run_restic backup \
-          --tag "app:_config" \
-          --host homelab \
-          --exclude '*.sock' --exclude '*.pid' \
-          "${conf_targets[@]}" 2>&1 | sed 's/^/    /'; then
-        ok "  配置文件备份完成"
-        SUCCEEDED+=("_config")
-      else
-        warn "  配置文件备份失败"
-        FAILED+=("_config")
-      fi
-    fi
-    echo
-  fi
 
   if [[ $found -eq 0 ]]; then
     if [[ -n "$FILTER" ]]; then
