@@ -218,14 +218,9 @@ do_restore() {
       info "恢复到 $(realpath --relative-to="$REPO_ROOT" "$outdir")"
 
       # --target 指定恢复到哪，restic 会在里面重建原始的目录结构
-      docker run --rm \
-        --env-file "$REPO_ENV" \
-        --network host \
-        -v "$REPO_ROOT:/data" \
-        -v "restic-cache:/root/.cache/restic" \
-        ${RESTIC_LOCAL_MOUNT:-} \
-        "restic/restic:${RESTIC_TAG:-latest}" \
-        restore "$snap" --tag "app:${app}" \
+      # 用 run_restic_rw 而不是裸 docker run，因为它会注入 RESTIC_OPTIONS
+      # 转成的 -o 参数（比如 s3.bucket-lookup=dns）
+      run_restic_rw restore "$snap" --tag "app:${app}" \
         --target "/data/ops/backup/restored/$(basename "$outdir")" 2>&1 | sed 's/^/  /'
 
       echo
