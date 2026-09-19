@@ -5,24 +5,32 @@
 #  设计原则：所有日常操作一条命令搞定，不用记 docker compose 的参数。
 #
 #  用法总览：
-#    hl up <应用>          启动（自动创建 .env、拉镜像）
-#    hl down <应用>        停止
-#    hl restart <应用>     重启
-#    hl logs <应用>        看日志
-#    hl ps                 列出所有应用状态
-#    hl ports              端口占用总览
+#    hl up <应用...>        启动（自动创建 .env、拉镜像）
+#    hl up --all            启动全部服务
+#    hl down <应用...>      停止
+#    hl down --all          停止全部
+#    hl restart <应用>      重启
+#    hl logs <应用>         看日志
+#    hl pull <应用>         拉最新镜像
+#    hl ps                  列出所有应用状态
+#    hl ports               端口占用总览
 #
 #    hl proxy add <名字> <端口>   加一条反代（自动申请证书）
 #    hl proxy list               列出所有反代
 #    hl proxy reload             热加载 Caddy 配置
 #
-#    hl db create <名字>          在共享 pg 里建库和账号（随机密码）
+#    hl db create <库名>          在共享 pg 里建库和账号（随机密码）
+#    hl db list                  列出所有库
+#    hl db shell [库名]          进 psql
 #
 #    hl backup init              交互式配置备份
 #    hl backup now [应用]        立即备份
 #    hl backup list [应用]       查看快照列表
 #    hl backup restore           交互式恢复
 #    hl backup stats             空间占用统计
+#    hl backup prune             清理旧快照
+#
+#    hl rustdesk key             打印 RustDesk 公钥
 #
 #  「应用」可以写目录名（memos）或带路径（apps/100-memos），会自动查找。
 # ======================================================================

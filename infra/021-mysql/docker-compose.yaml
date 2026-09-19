@@ -62,7 +62,4 @@ services:
     labels:
       # 明确关闭自动更新，理由见文件开头
       com.centurylinklabs.watchtower.enable: "false"
-      # 备份模块用的发现标签
-      homelab.backup.type: "mysql"
-      homelab.backup.db: "${MYSQL_DATABASE}"
-      homelab.backup.user: "root"
+      # 备份：同 PostgreSQL，默认不备份（测试/备用库），需要时再加标签

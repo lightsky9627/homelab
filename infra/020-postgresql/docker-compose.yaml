@@ -74,7 +74,9 @@ services:
     labels:
       # 明确【关闭】自动更新，理由见文件开头
       com.centurylinklabs.watchtower.enable: "false"
-      # 备份模块靠这两个标签自动发现要备份哪些库，见 ops/backup/
-      homelab.backup.type: "postgres"
-      homelab.backup.db: "${POSTGRES_DB}"
-      homelab.backup.user: "${POSTGRES_USER}"
+      # 备份：这里的数据默认【不】备份（本实例是测试/备用库）。
+      # 如果以后有应用真的用了这个 PG 并要备份，再加：
+      #   homelab.backup.enable: "true"
+      #   homelab.backup.type: "postgres"      # 需要配套的 pg_dump 逻辑
+      #   homelab.backup.db: "${POSTGRES_DB}"
+      #   homelab.backup.user: "${POSTGRES_USER}"
