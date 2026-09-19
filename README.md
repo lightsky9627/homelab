@@ -19,7 +19,7 @@ homelab/
 │   └── 021-mysql/        # 共享 MySQL（按需）
 ├── apps/                 # 应用（依赖基础设施）
 │   ├── 100-memos/        # 笔记服务
-│   └── 110-rustdesk/     # 远程桌面
+│   └── 101-rustdesk/     # 远程桌面
 └── ops/                  # 运维
     ├── watchtower/       # 自动更新镜像
     └── backup/           # 定时备份（restic）

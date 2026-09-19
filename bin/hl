@@ -452,7 +452,7 @@ cmd_rustdesk() {
   local sub="${1:-key}"
   case "$sub" in
     key)
-      local f="$REPO_ROOT/apps/110-rustdesk/data/id_ed25519.pub"
+      local f="$REPO_ROOT/apps/101-rustdesk/data/id_ed25519.pub"
       [[ -f "$f" ]] || die "公钥还没生成，先执行 hl up rustdesk 启动服务"
       echo "客户端配置里的 Key 填这个："
       echo "${C_YEL}$(cat "$f")${C_OFF}"
