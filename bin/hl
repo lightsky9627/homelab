@@ -141,9 +141,29 @@ gen_pass() { openssl rand -hex 24; }
 
 cmd_up() {
   ensure_root_env
-  local targets=("$@")
-  # 不给参数就启动全部
-  [[ ${#targets[@]} -gt 0 ]] || mapfile -t targets < <(list_apps)
+  local targets=()
+
+  # 不传参数：打印用法和可用列表，不默认启动全部
+  #（避免把没用到的 MySQL 等一起拉起来白占内存）
+  if [[ $# -eq 0 ]]; then
+    echo "用法: hl up <服务名...> 或 hl up --all"
+    echo
+    echo "可用服务："
+    echo "  infra:  $(cd "$REPO_ROOT" && ls -d infra/*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
+    echo "  apps:   $(cd "$REPO_ROOT" && ls -d apps/*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
+    echo "  ops:    $(cd "$REPO_ROOT" && ls -d ops/*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
+    echo
+    echo "示例："
+    echo "  hl up caddy postgresql memos    # 启动指定服务"
+    echo "  hl up --all                     # 启动全部服务"
+    exit 1
+  fi
+
+  if [[ "$1" == "--all" || "$1" == "-a" ]]; then
+    mapfile -t targets < <(list_apps)
+  else
+    targets=("$@")
+  fi
 
   local t
   for t in "${targets[@]}"; do
@@ -163,8 +183,20 @@ cmd_up() {
 }
 
 cmd_down() {
-  local targets=("$@")
-  [[ ${#targets[@]} -gt 0 ]] || mapfile -t targets < <(list_apps)
+  local targets=()
+  # 同样不默认全停，避免误操作
+  if [[ $# -eq 0 ]]; then
+    echo "用法: hl down <服务名...> 或 hl down --all"
+    echo "示例: hl down memos 或 hl down --all"
+    exit 1
+  fi
+
+  if [[ "$1" == "--all" || "$1" == "-a" ]]; then
+    mapfile -t targets < <(list_apps)
+  else
+    targets=("$@")
+  fi
+
   local t
   for t in "${targets[@]}"; do
     local dir; dir="$(find_app "$t")"
