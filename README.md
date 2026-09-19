@@ -197,6 +197,10 @@ mkdir -p apps/103-newapp
 #    想备份就加 homelab.backup.* 标签
 
 # 3. 写 .env.example（给出所有变量的默认值和注释）
+#    需要用户填写的重要变量，用 "# @required" 注释标记（紧挨变量行），
+#    hl up 启动前会检查这些变量，还是占位符或空值就拒绝启动：
+#      # @required 对外地址
+#      DOMAIN=https://vault.example.com
 
 # 4. 写 README.md（一句话介绍 + 部署步骤 + 常见问题）
 

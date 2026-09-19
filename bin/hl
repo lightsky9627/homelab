@@ -147,6 +147,67 @@ read_env() {
   sed -n "s/^${key}=//p" "$file" | tail -1 | sed 's/^["'\'']//; s/["'\'']$//'
 }
 
+# ----------------------------------------------------------------------
+#  必填变量检查
+#
+#  约定：.env.example 里用 "# @required" 注释标记必填变量，
+#  该注释必须紧挨变量定义行（中间只允许其它注释，不允许空行）。
+#
+#  例：
+#    # @required 对外地址，必须和实际域名一致
+#    MEMOS_INSTANCE_URL=https://memos.example.com
+#
+#  hl up 启动前会检查这些变量，还是占位符（example.com / CHANGE_ME）
+#  或空值时拒绝启动，避免带着错误配置跑起来。
+# ----------------------------------------------------------------------
+
+# 从 .env.example 里提取所有 @required 标记的变量名
+required_vars() {
+  local example="$1" pending="" line
+  [[ -f "$example" ]] || return 0
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^#[[:space:]]*@required ]]; then
+      pending=1
+    elif [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)= ]]; then
+      if [[ -n "$pending" ]]; then
+        echo "${BASH_REMATCH[1]}"
+        pending=""
+      fi
+    elif [[ -z "$(echo "$line" | tr -d '[:space:]')" ]]; then
+      pending=""   # 空行隔断 @required 和变量定义
+    fi
+  done < "$example"
+}
+
+# 判断值是否还是占位符 / 未填写
+is_placeholder() {
+  local v="$1"
+  [[ -z "$v" ]] && return 0
+  [[ "$v" == *CHANGE_ME* ]] && return 0
+  [[ "$v" == *example.com* || "$v" == *example.org* || "$v" == *example.net* ]] && return 0
+  return 1
+}
+
+# 检查某目录 .env 的必填项，全部填写返回 0，否则返回 1
+check_required() {
+  local dir="$1"
+  local example="$dir/.env.example"
+  local env="$dir/.env"
+  [[ -f "$example" ]] || return 0
+  [[ -f "$env" ]] || return 1
+
+  local var val missing=0
+  while IFS= read -r var; do
+    [[ -n "$var" ]] || continue
+    val="$(read_env "$env" "$var")"
+    if is_placeholder "$val"; then
+      warn "    ${var} 还没填（还是占位符或空值）"
+      missing=1
+    fi
+  done < <(required_vars "$example")
+  return $missing
+}
+
 # 生成随机密码：只用字母数字，避免拼进 URL 时要转义
 gen_pass() { openssl rand -hex 24; }
 
@@ -156,6 +217,13 @@ gen_pass() { openssl rand -hex 24; }
 
 cmd_up() {
   ensure_root_env
+
+  # 根 .env 的必填项（BASE_DOMAIN / ACME_EMAIL）没填会导致反代和证书失败，
+  # 直接拒绝，不逐个跳过
+  if ! check_required "$REPO_ROOT"; then
+    die "根目录 .env 有必填项没填（见上面提示），改好再启动: vim .env"
+  fi
+
   local targets=()
 
   # 不传参数：打印用法和可用列表，不默认启动全部
@@ -185,9 +253,10 @@ cmd_up() {
     local dir; dir="$(find_app "$t")"
     ensure_env "$dir"
 
-    # 起之前检查有没有没填的占位符
-    if [[ -f "$dir/.env" ]] && grep -q "CHANGE_ME" "$dir/.env"; then
-      warn "$(basename "$dir")/.env 里还有 CHANGE_ME 没填，跳过"
+    # 检查必填变量：@required 标记的变量如果还是占位符
+    #（example.com / CHANGE_ME）或空值，拒绝启动这个应用
+    if ! check_required "$dir"; then
+      warn "$(basename "$dir") 还有必填项没填，跳过启动"
       continue
     fi
 
