@@ -71,30 +71,108 @@ BACKEND="$(ask "选择 (1-4)" "1")"
 
 REPO_URL=""
 AWS_KEY=""; AWS_SECRET=""
+BUCKET_LOOKUP="auto"
 B2_ID=""; B2_KEY=""
 
 case "$BACKEND" in
   1)
     echo
-    echo "${C_DIM}常见 Endpoint 格式：${C_OFF}"
-    echo "${C_DIM}  AWS S3:        https://s3.<region>.amazonaws.com/<bucket>/<路径>${C_OFF}"
-    echo "${C_DIM}  阿里云 OSS:    https://oss-cn-hangzhou.aliyuncs.com/<bucket>/<路径>${C_OFF}"
-    echo "${C_DIM}  腾讯云 COS:    https://cos.ap-guangzhou.myqcloud.com/<bucket>/<路径>${C_OFF}"
-    echo "${C_DIM}  Cloudflare R2: https://<account_id>.r2.cloudflarestorage.com/<bucket>${C_OFF}"
-    echo "${C_DIM}  MinIO 自建:    https://minio.example.com/<bucket>/<路径>${C_OFF}"
+    echo "${C_DIM}只填服务地址（Endpoint），不要带 bucket 名，下一步单独问。${C_OFF}"
     echo
-    ENDPOINT="$(ask "S3 地址 (不含 s3: 前缀)")"
-    [[ -n "$ENDPOINT" ]] || die "地址不能为空"
-    REPO_URL="s3:${ENDPOINT}"
+    echo "${C_DIM}  AWS S3:        s3.us-east-1.amazonaws.com${C_OFF}"
+    echo "${C_DIM}  阿里云 OSS:    oss-cn-hangzhou.aliyuncs.com${C_OFF}"
+    echo "${C_DIM}  腾讯云 COS:    cos.ap-guangzhou.myqcloud.com${C_OFF}"
+    echo "${C_DIM}  Cloudflare R2: <account_id>.r2.cloudflarestorage.com${C_OFF}"
+    echo "${C_DIM}  MinIO 自建:    minio.example.com${C_OFF}"
+    echo
+    ENDPOINT="$(ask "Endpoint 域名")"
+    [[ -n "$ENDPOINT" ]] || die "Endpoint 不能为空"
+
+    # 把用户可能粘贴的 https:// 前缀和末尾斜杠剥掉，统一成纯域名
+    SCHEME="https"
+    case "$ENDPOINT" in
+      http://*)  SCHEME="http";  ENDPOINT="${ENDPOINT#http://}"  ;;
+      https://*) SCHEME="https"; ENDPOINT="${ENDPOINT#https://}" ;;
+    esac
+    ENDPOINT="${ENDPOINT%%/*}"
+
+    # ---- bucket 单独问（这是关键，漏了会报 "Bucket name cannot be empty"）----
+    BUCKET="$(ask "Bucket 名称")"
+    [[ -n "$BUCKET" ]] || die "Bucket 名不能为空"
+
+    # 腾讯云 COS 的 bucket 必须带 APPID 后缀
+    if [[ "$ENDPOINT" == *myqcloud.com ]] && [[ "$BUCKET" != *-[0-9]* ]]; then
+      warn "腾讯云 COS 的 bucket 名通常形如 mybucket-1250000000（带 APPID）"
+      ask_yn "确定 '${BUCKET}' 是完整名称？" "y" || die "请重新运行并填完整 bucket 名"
+    fi
+
+    PREFIX="$(ask "仓库在 bucket 内的路径前缀（留空则放根目录）" "homelab")"
+
+    # ---- 拼接仓库 URL ----
+    # 重要：restic 的 S3 地址格式固定为 s3:endpoint/bucket/path，
+    # bucket 永远写在路径第一段，不能写成 bucket.endpoint 的域名形式。
+    #（写成域名形式，restic 会把路径第一段误认成 bucket，报 key 不存在）
+    # 真正的寻址风格由下面写进 repo.env 的 s3.bucket-lookup 控制。
+    if [[ -n "$PREFIX" ]]; then
+      REPO_URL="s3:${SCHEME}://${ENDPOINT}/${BUCKET}/${PREFIX}"
+    else
+      REPO_URL="s3:${SCHEME}://${ENDPOINT}/${BUCKET}"
+    fi
+
+    # ---- 寻址风格 ----
+    echo
+    echo "${C_DIM}寻址风格决定实际发给服务器的 HTTP 请求长什么样：${C_OFF}"
+    echo "${C_DIM}  虚拟主机风格：请求发往 ${BUCKET}.${ENDPOINT}${C_OFF}"
+    echo "${C_DIM}  路径风格：    请求发往 ${ENDPOINT}/${BUCKET}${C_OFF}"
+    echo "${C_DIM}（两种风格下配置里的仓库地址写法都一样，只是底层请求不同）${C_OFF}"
+    echo
+    echo "  1) 自动检测（推荐）"
+    echo "  2) 强制虚拟主机风格（dns）"
+    echo "     主流云厂商都支持：AWS S3 / 阿里云 OSS / 腾讯云 COS / R2"
+    echo "  3) 强制路径风格（path）"
+    echo "     自建 MinIO / Ceph 没配泛域名时选这个"
+    echo
+
+    # 腾讯云 COS / 阿里云 OSS / R2 强制要求虚拟主机风格，默认选 2
+    STYLE_DEFAULT="1"
+    case "$ENDPOINT" in
+      *myqcloud.com|*aliyuncs.com|*r2.cloudflarestorage.com) STYLE_DEFAULT="2" ;;
+    esac
+    [[ "$STYLE_DEFAULT" == "2" ]] && \
+      echo "${C_DIM}（检测到你用的服务商要求虚拟主机风格，已默认选 2）${C_OFF}"
+
+    STYLE="$(ask "选择 (1-3)" "$STYLE_DEFAULT")"
+    case "$STYLE" in
+      2) BUCKET_LOOKUP="dns"  ;;
+      3) BUCKET_LOOKUP="path" ;;
+      *) BUCKET_LOOKUP="auto" ;;
+    esac
+
+    echo
+    info "仓库地址: ${C_YEL}${REPO_URL}${C_OFF}"
+    info "寻址风格: ${C_YEL}${BUCKET_LOOKUP}${C_OFF}"
+
     AWS_KEY="$(ask "Access Key ID")"
+    [[ -n "$AWS_KEY" ]] || die "Access Key 不能为空"
     AWS_SECRET="$(ask_secret "Secret Access Key")"
+    [[ -n "$AWS_SECRET" ]] || die "Secret Key 不能为空"
     ;;
   2)
     BUCKET="$(ask "B2 Bucket 名")"
+    [[ -n "$BUCKET" ]] || die "Bucket 名不能为空"
     PREFIX="$(ask "路径前缀" "homelab")"
-    REPO_URL="b2:${BUCKET}:${PREFIX}"
+    # b2 的格式是 b2:<bucket>:<path>，path 为空时连冒号一起省掉
+    if [[ -n "$PREFIX" ]]; then
+      REPO_URL="b2:${BUCKET}:${PREFIX}"
+    else
+      REPO_URL="b2:${BUCKET}"
+    fi
     B2_ID="$(ask "B2 Account ID / keyID")"
+    [[ -n "$B2_ID" ]] || die "Account ID 不能为空"
     B2_KEY="$(ask_secret "B2 Application Key")"
+    [[ -n "$B2_KEY" ]] || die "Application Key 不能为空"
+    echo
+    info "仓库地址: ${C_YEL}${REPO_URL}${C_OFF}"
     ;;
   3)
     REPO_URL="$(ask "本地目录绝对路径" "/mnt/backup/homelab")"
@@ -179,6 +257,11 @@ if [[ -n "$AWS_KEY" ]]; then
 # ---- S3 凭据 ----
 AWS_ACCESS_KEY_ID=${AWS_KEY}
 AWS_SECRET_ACCESS_KEY=${AWS_SECRET}
+
+# ---- 寻址风格 ----
+# auto = 自动检测，dns = 虚拟主机风格，path = 路径风格
+# 连不上时可以改成另一种试试
+RESTIC_OPTIONS=s3.bucket-lookup=${BUCKET_LOOKUP}
 
 EOF
 fi

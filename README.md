@@ -124,7 +124,9 @@ Watchtower 使用标签选择模式（`WATCHTOWER_LABEL_ENABLE=true`），只更
 
 - 支持 S3 / B2 / 本地目录 / SFTP
 - 每个应用独立快照（带 tag），可单独查询/恢复
-- 数据库先 pg_dump 再备份，保证一致性
+- SQLite 库用 `.backup` 取一致性快照，不会备出写一半的坏库
+- 默认排除 `*.db-wal`、`*.db-shm`、`*.log`、`*.tmp`
+- 单独备份全局配置快照（所有 `.env` + compose + Caddyfile）
 - 按保留策略自动清理（每日/每周/每月/最近 N 份）
 - 空间告警 + 可选通知（Telegram / Bark / 邮件）
 
@@ -133,6 +135,34 @@ bin/hl backup init    # 第一次用：交互式配置，选后端、生成密�
 bin/hl backup now     # 跑一次验证
 bin/hl up backup      # 启动定时调度（默认每天 3:30）
 ```
+
+### 备份范围控制
+
+备份什么、不备份什么，由应用 `docker-compose.yaml` 里的标签决定：
+
+```yaml
+labels:
+  homelab.backup.enable: "true"               # 开启备份
+  homelab.backup.paths: "./data"              # 要备份的目录
+  homelab.backup.sqlite: "./data/app.db"      # 需要一致性快照的 SQLite 库
+  homelab.backup.exclude: "cache/,*.log"      # 排除规则（逗号分隔）
+```
+
+- `sqlite`：声明了才做 `.backup` 快照，没声明就按普通文件备份
+- `exclude`：glob 模式，跳过缓存、缩略图、日志等丢了能重建的文件
+- 典型场景：RSS 阅读器的文章缓存、图片缩略图，数据库里的订阅源才重要
+
+### 恢复流程
+
+```bash
+bin/hl backup restore    # 交互式：选应用 → 选快照 → 导出到临时目录
+# 确认内容无误后，按提示覆盖回去：
+#   cp 快照.db 应用到 data/ 里   （覆盖 SQLite 库）
+#   bin/hl up 应用               （重启）
+```
+
+相比之前用 PostgreSQL 时的「起 PG → 建库 → 灌 SQL → 对密码」，
+现在全 SQLite 的恢复就是「拷文件 → 重启」，两步搞定。
 
 ## 新增应用
 
