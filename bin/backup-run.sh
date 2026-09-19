@@ -223,7 +223,7 @@ if [[ $PRUNE_ONLY -eq 0 ]]; then
     while IFS= read -r f; do
       [[ -n "$f" ]] && conf_targets+=("/data/${f#$REPO_ROOT/}")
     done < <(find "$REPO_ROOT" \
-               \( -name '.env' -o -name 'docker-compose.yaml' -o -name 'Caddyfile' \) \
+               \( -name '.env' -o -name 'secrets.env' -o -name 'docker-compose.yaml' -o -name 'Caddyfile' \) \
                -not -path '*/data/*' -not -path '*/.git/*' 2>/dev/null | sort)
 
     # 脚本和反代站点配置也带上

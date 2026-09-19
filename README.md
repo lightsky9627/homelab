@@ -20,7 +20,8 @@ homelab/
 │   └── 021-mysql/        # MySQL（按需）
 ├── apps/                 # 应用
 │   ├── 100-memos/        # 笔记 / 备忘录
-│   └── 101-rustdesk/     # 远程桌面
+│   ├── 101-rustdesk/     # 远程桌面
+│   └── 102-vaultwarden/  # 密码管理器（Bitwarden 兼容）
 └── ops/                  # 运维
     ├── watchtower/       # 自动更新镜像
     └── backup/           # 定时备份（restic）
@@ -187,7 +188,7 @@ bin/hl backup restore    # 交互式：选应用 → 选快照 → 导出到临�
 
 ```bash
 # 1. 建目录（编号在 1xx 段内递增）
-mkdir -p apps/102-newapp
+mkdir -p apps/103-newapp
 
 # 2. 写 docker-compose.yaml
 #    镜像用标准 Docker Hub 名称

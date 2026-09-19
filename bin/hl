@@ -122,6 +122,13 @@ ensure_env() {
     chmod 600 "$dir/.env"
     warn "已创建 $(realpath --relative-to="$REPO_ROOT" "$dir")/.env，请先填写里面的 CHANGE_ME 项"
   fi
+  # 部分应用还有额外的密钥文件（如 vaultwarden 的 secrets.env，
+  # 存 ADMIN_TOKEN 的 argon2 哈希，含 $ 不适合放 .env 里被插值）。
+  if [[ ! -f "$dir/secrets.env" && -f "$dir/secrets.env.example" ]]; then
+    cp "$dir/secrets.env.example" "$dir/secrets.env"
+    chmod 600 "$dir/secrets.env"
+    warn "已创建 $(realpath --relative-to="$REPO_ROOT" "$dir")/secrets.env，请填写里面的密钥"
+  fi
 }
 
 # 确保全局 .env 存在

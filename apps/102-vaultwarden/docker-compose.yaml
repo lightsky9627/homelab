@@ -1,0 +1,124 @@
+# ======================================================================
+#  Vaultwarden —— 自托管密码管理器（Bitwarden 兼容）
+#
+#  数据库策略：用官方默认的 SQLite，不接 PostgreSQL。
+#
+#  为什么选 SQLite：
+#    1. vaultwarden 官方默认就是 SQLite（不设 DATABASE_URL 即启用），
+#       个人/家庭单实例的写入量远够用
+#    2. 符合本仓库「应用默认 SQLite」策略，备份恢复一条龙：
+#       .backup 原子快照 + 目录备份，恢复就是拷文件
+#    3. 少一个 PG 依赖，也少一份「PG 挂了密码库打不开」的风险
+#
+#  什么时候该换 PG：多用户并发、条目到几十万、或需要独立库做只读副本。
+#  真到那天，设 DATABASE_URL 指向 infra/020-postgresql 即可，
+#  但要把 data/ 里的 db.sqlite3 数据迁移过去（vaultwarden 不自动搬）。
+#
+#  镜像用 latest + watchtower 自动更新：vaultwarden 是应用层，
+#  升级自带迁移逻辑，但升级前务必有备份（本仓库备份默认 3:30，
+#  watchtower 4:00，顺序正好）。
+# ======================================================================
+
+name: vaultwarden
+
+services:
+  vaultwarden:
+    image: vaultwarden/server:${VAULTWARDEN_TAG}
+    container_name: vaultwarden
+    restart: unless-stopped
+
+    environment:
+      # ---- 数据库：SQLite ----
+      # 不设 DATABASE_URL 就是 SQLite，库文件落在 /data/db.sqlite3
+
+      # ---- 对外访问地址 ----
+      # 必须和实际访问域名完全一致（含 https://），
+      # 否则 WebAuthn 硬件密钥、邮件里的链接会指向错误地址
+      DOMAIN: ${DOMAIN}
+
+      # ---- 注册策略 ----
+      # 首次部署建议临时设 true 注册第一个账号，注册完改回 false。
+      # 之后靠 /admin 面板的邀请链接加人（INVITATIONS_ALLOWED=true）。
+      SIGNUPS_ALLOWED: ${SIGNUPS_ALLOWED}
+      INVITATIONS_ALLOWED: ${INVITATIONS_ALLOWED}
+
+      # ---- 附件配额（KB；0=禁止上传）----
+      # 注意：这两个限的是「累计总量」不是单文件，单文件大小由反代控制
+      USER_ATTACHMENT_LIMIT: ${USER_ATTACHMENT_LIMIT}
+      ORG_ATTACHMENT_LIMIT: ${ORG_ATTACHMENT_LIMIT}
+
+      # ---- Web 端 / 基础 ----
+      WEB_VAULT_ENABLED: ${WEB_VAULT_ENABLED}
+      # 不显示密码提示（密码提示会泄露线索，个人使用关掉）
+      SHOW_PASSWORD_HINT: "false"
+      # 新设备登录要邮箱验证码（防暴力破解撞库）
+      REQUIRE_DEVICE_EMAIL: ${REQUIRE_DEVICE_EMAIL}
+      LOG_LEVEL: ${LOG_LEVEL}
+      TZ: ${TZ}
+
+      # ---- 容器内监听地址/端口 ----
+      # vaultwarden 默认就是 0.0.0.0:80，显式写出来说明意图。
+      # 宿主端口在下方 ports 映射（默认 8080，因为 80 被 Caddy 占了）。
+      ROCKET_ADDRESS: 0.0.0.0
+      ROCKET_PORT: 80
+
+      # ---- SMTP（可选，默认关闭）----
+      # ⚠️ vaultwarden 1.37+ 只要收到任何 SMTP_* 环境变量（哪怕是空值）
+      # 就会进入 SMTP 校验：SMTP_HOST 和 SMTP_FROM 必须同时有效，
+      # SMTP_SECURITY 也不能为空。所以不配 SMTP 时下面全部保持注释，
+      # 完全不要传这些变量；要配 SMTP 时再取消注释并在 .env 里填值。
+      # SMTP_FROM_NAME: ${SMTP_FROM_NAME}
+      # SMTP_HOST: ${SMTP_HOST}
+      # SMTP_FROM: ${SMTP_FROM}
+      # SMTP_PORT: ${SMTP_PORT}
+      # SMTP_SECURITY: ${SMTP_SECURITY}
+      # SMTP_USERNAME: ${SMTP_USERNAME}
+      # SMTP_PASSWORD: ${SMTP_PASSWORD}
+
+      # ---- 移动端推送通知（可选）----
+      # 在 https://bitwarden.com/host/ 申请
+      PUSH_ENABLED: ${PUSH_ENABLED}
+      PUSH_INSTALLATION_ID: ${PUSH_INSTALLATION_ID}
+      PUSH_INSTALLATION_KEY: ${PUSH_INSTALLATION_KEY}
+
+      # ---- YubiKey OTP 二次验证（可选）----
+      YUBICO_CLIENT_ID: ${YUBICO_CLIENT_ID}
+      YUBICO_SECRET_KEY: ${YUBICO_SECRET_KEY}
+
+    env_file:
+      # ADMIN_TOKEN 单独放这里：env_file 的值不会被 compose 做 ${} 插值，
+      # argon2 哈希里的 $ 可以原样写，不用转义。
+      - ./secrets.env
+
+    volumes:
+      # 数据库（db.sqlite3）、RSA 密钥（rsa_key，丢了所有加密数据解不开）、
+      # 附件（attachments/）、Send（sends/）全在这个目录。
+      # 备份只要备它，恢复只要还原它。
+      - ./data:/data
+
+    ports:
+      # 容器内 80 → 宿主 8080，只绑 127.0.0.1，由 Caddy 反代
+      # 反代命令：bin/hl proxy add vaultwarden 8080
+      - "127.0.0.1:${VAULTWARDEN_PORT}:80"
+
+    healthcheck:
+      # /alive 是 vaultwarden 的存活探测端点
+      # 镜像里没有 wget，用 curl（-f 让非 2xx 返回非零）
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:80/alive"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    labels:
+      # 应用层，开启自动更新
+      com.centurylinklabs.watchtower.enable: "true"
+
+      # ---- 备份 ----
+      # sqlite 声明了 db.sqlite3，备份脚本会用 .backup 取原子快照，
+      # 避免直接 cp 拷到写一半的库（数据在 -wal 里没合入）。
+      # exclude 排除图标缓存：丢了能重新抓取，没必要占备份空间。
+      homelab.backup.enable: "true"
+      homelab.backup.paths: "./data"
+      homelab.backup.sqlite: "./data/db.sqlite3"
+      homelab.backup.exclude: "icon_cache/"

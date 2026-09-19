@@ -12,6 +12,10 @@ data/
 */.env
 **/.env
 
+# 应用级密钥文件（如 vaultwarden 的 ADMIN_TOKEN，argon2 哈希含 $ 不适用于 .env）
+secrets.env
+**/secrets.env
+
 # 3) 备份模块的仓库密钥 / 对象存储凭据
 ops/backup/repo.env
 ops/backup/*.secret
