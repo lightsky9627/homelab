@@ -40,6 +40,27 @@ load_global() {
   RESTIC_IMAGE="restic/restic:${RESTIC_TAG}"
 }
 
+# ----------------------------------------------------------------------
+#  把 repo.env 里的 RESTIC_OPTIONS 转成 restic 命令行 -o 参数
+#
+#  为什么不能靠环境变量：restic 并不识别 RESTIC_OPTIONS 这个环境变量
+#  （实测 0.19.1 二进制里根本没有这个字符串），backend 选项只能通过
+#  命令行 -o key=value 显式传递。所以这里读出来手动转。
+#
+#  输出每行一个参数，例如：
+#    -o
+#    s3.bucket-lookup=dns
+# ----------------------------------------------------------------------
+restic_opts() {
+  local opts; opts="$(read_env "$REPO_ENV" RESTIC_OPTIONS)"
+  [[ -z "$opts" ]] && return 0
+  local pair
+  local IFS=','
+  for pair in $opts; do
+    [[ -n "$pair" ]] && printf '%s\n%s\n' "-o" "$pair"
+  done
+}
+
 # 检查备份是否已配置
 require_repo_env() {
   [[ -f "$REPO_ENV" ]] || die "备份还没配置，请先执行: bin/hl backup init"
@@ -57,37 +78,43 @@ require_repo_env() {
 # ----------------------------------------------------------------------
 run_restic() {
   load_global
+  local -a opts
+  mapfile -t opts < <(restic_opts)
   docker run --rm \
     --env-file "$REPO_ENV" \
     --network host \
     -v "$REPO_ROOT:/data:ro" \
     -v "restic-cache:/root/.cache/restic" \
     ${RESTIC_LOCAL_MOUNT:-} \
-    "$RESTIC_IMAGE" "$@"
+    "$RESTIC_IMAGE" "${opts[@]}" "$@"
 }
 
 # 可写模式（恢复数据时需要写入，所以仓库目录不能只读挂载）
 run_restic_rw() {
   load_global
+  local -a opts
+  mapfile -t opts < <(restic_opts)
   docker run --rm \
     --env-file "$REPO_ENV" \
     --network host \
     -v "$REPO_ROOT:/data" \
     -v "restic-cache:/root/.cache/restic" \
     ${RESTIC_LOCAL_MOUNT:-} \
-    "$RESTIC_IMAGE" "$@"
+    "$RESTIC_IMAGE" "${opts[@]}" "$@"
 }
 
 # 交互式运行（需要 tty，用于 restic 的交互提示）
 run_restic_tty() {
   load_global
+  local -a opts
+  mapfile -t opts < <(restic_opts)
   docker run --rm -it \
     --env-file "$REPO_ENV" \
     --network host \
     -v "$REPO_ROOT:/data" \
     -v "restic-cache:/root/.cache/restic" \
     ${RESTIC_LOCAL_MOUNT:-} \
-    "$RESTIC_IMAGE" "$@"
+    "$RESTIC_IMAGE" "${opts[@]}" "$@"
 }
 
 # ----------------------------------------------------------------------

@@ -260,7 +260,9 @@ AWS_SECRET_ACCESS_KEY=${AWS_SECRET}
 
 # ---- 寻址风格 ----
 # auto = 自动检测，dns = 虚拟主机风格，path = 路径风格
-# 连不上时可以改成另一种试试
+# 连不上时可以改成另一种试试。
+# 注意：这是 restic 的 backend 选项，必须写成 -o key=value 才能生效；
+# backup-lib.sh 会读这行自动转成 -o，不要自己改格式。
 RESTIC_OPTIONS=s3.bucket-lookup=${BUCKET_LOOKUP}
 
 EOF
