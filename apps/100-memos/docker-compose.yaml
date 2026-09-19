@@ -1,12 +1,17 @@
 # ======================================================================
 #  Memos —— 轻量级笔记 / 备忘服务
 #
-#  数据库策略：用 infra/020-postgresql 那个共享实例，不自己起一个 pg。
-#  好处是只有一份数据库要备份、要调优、要升级。
+#  数据库策略：用 memos 自带的 SQLite，不接共享 PostgreSQL。
 #
-#  首次使用前，需要在共享 pg 里给 memos 建一个独立的库和账号：
-#      bin/hl db create memos
-#  这条命令会生成随机密码并打印出来，把它填到本目录的 .env 里。
+#  为什么选 SQLite：
+#    1. 个人单用户场景，SQLite 的性能绰绰有余（官网自己就用 SQLite 跑）
+#    2. 没有额外依赖，不用先起 PG、建库、配密码，少三个出错环节
+#    3. 备份恢复极简：笔记正文和附件都在 ./data 里，还原文件就能用，
+#       不需要「起 PG → 建库 → 灌 SQL → 对密码」这一长串
+#    4. PG 挂了会拖垮所有接它的应用，SQLite 坏了只影响 memos 自己
+#
+#  什么时候该换回 PG：多人协作、笔记量到几十万条、或要做复杂查询。
+#  真到那天，memos 支持用 MEMOS_DRIVER 切换，infra/020-postgresql 一直留着。
 #
 #  镜像用 stable 滚动标签 + watchtower 自动更新：
 #  memos 是应用层，升级只涉及自己的表结构迁移，它启动时会自动执行，
@@ -15,14 +20,6 @@
 
 name: memos
 
-# 加入共享数据库的网络。
-# external: true 表示这个网络由 infra/020-postgresql 创建，这里只是接进去，
-# 所以必须先启动 postgresql，memos 才能起来。
-networks:
-  db:
-    name: homelab-db
-    external: true
-
 services:
   memos:
     image: neosmemo/memos:${MEMOS_TAG}
@@ -30,13 +27,9 @@ services:
     restart: unless-stopped
 
     environment:
-      # ---- 数据库：强制用 PostgreSQL，不用默认的 sqlite ----
-      MEMOS_DRIVER: postgres
-      # 走 docker 网络用服务名连接共享 PostgreSQL。
-      # 这里的 postgresql 是容器名，由 homelab-db 网络内的 DNS 解析。
-      # 端口是容器内的 5432（不是宿主映射的端口，别混淆）。
-      # sslmode=disable：同一个 docker 网络内的明文连接，不需要 TLS。
-      MEMOS_DSN: postgres://${DB_USER}:${DB_PASSWORD}@postgresql:5432/${DB_NAME}?sslmode=disable
+      # ---- 数据库：SQLite，库文件落在下面挂载的数据目录里 ----
+      # memos 会在 /var/opt/memos 下自动创建 memos_prod.db
+      MEMOS_DRIVER: sqlite
 
       # 容器内监听端口，保持 memos 默认的 5230
       MEMOS_PORT: "5230"
@@ -51,13 +44,9 @@ services:
 
       TZ: ${TZ}
 
-    networks:
-      # default 让它能对外访问（拉取链接预览等），db 用来连数据库
-      - default
-      - db
-
     volumes:
-      # 附件、缩略图等文件（笔记正文在 PostgreSQL 里）
+      # 笔记正文（SQLite 库文件）、附件、缩略图全都在这个目录里。
+      # 备份只要备它，恢复只要还原它。
       - ./data/memos:/var/opt/memos
 
     ports:
@@ -76,7 +65,18 @@ services:
     labels:
       # 应用层，开启自动更新
       com.centurylinklabs.watchtower.enable: "true"
-      # 备份模块：这个应用的数据 = pg 里的 memos 库 + ./data/memos 目录
+
+      # ---- 备份策略 ----
+      # enable  : 开启备份
+      # paths   : 要备份的目录（相对本应用目录，逗号分隔）
+      # sqlite  : 需要做一致性快照的库文件（见下方说明，逗号分隔）
+      # exclude : 不备份的内容（glob 模式，逗号分隔）
+      #
+      # 关于 sqlite：SQLite 写入时数据分散在 .db 和 .db-wal 两个文件，
+      # 直接 cp 可能拷到「写到一半」的状态，恢复出来是坏库。
+      # 声明了这个标签，备份脚本会先用 sqlite3 .backup 取一份原子快照，
+      # 保证拿到的一定是完整可用的库。
       homelab.backup.enable: "true"
-      homelab.backup.pg-db: "${DB_NAME}"
       homelab.backup.paths: "./data/memos"
+      homelab.backup.sqlite: "./data/memos/memos_prod.db"
+      homelab.backup.exclude: "*.db-wal,*.db-shm,*.log,thumbs/"
