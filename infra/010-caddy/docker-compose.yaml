@@ -30,6 +30,16 @@ services:
       ACME_EMAIL: ${ACME_EMAIL}
       TZ: ${TZ}
 
+      # ---- 代理（可选）----
+      # 国内服务器直连 ACME（Let's Encrypt / ZeroSSL）经常超时，
+      # 本机有代理的话，填上让 Caddy 的 ACME 客户端走代理签证书。
+      # 留空则直连。注意：这只影响 ACME 客户端，不影响反向代理（
+      # reverse_proxy 是 Caddy 自己控制的，不读这些变量）。
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      # 不走代理的地址（Go 默认已对 localhost/127.0.0.1 豁免，这里可再补内网）
+      NO_PROXY: ${NO_PROXY:-}
+
     volumes:
       # 主配置：只读挂载，改完执行 bin/hl proxy reload 热加载
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
