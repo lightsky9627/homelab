@@ -178,6 +178,13 @@ do_restore() {
     || die "无效选择"
   local app="${apps[$((choice-1))]}"
 
+  # 解析该应用声明的备份标签（discover_apps 输出：目录|名字|paths|sqlite|excludes）
+  # sqlite 用于恢复时把一致性快照覆盖回应用目录，两个恢复方式都会用到。
+  local info_line sqlite_rel app_dir
+  info_line="$(discover_apps | grep -F "|${app}|" | head -1)"
+  sqlite_rel="$(echo "$info_line" | cut -d'|' -f4)"
+  app_dir="$(echo "$info_line" | cut -d'|' -f1)"
+
   # ---- 第 2 步：选快照 ----
   echo
   echo "${C_YEL}【2/4】选择快照版本${C_OFF}"
@@ -239,17 +246,25 @@ do_restore() {
       echo "     find ${outdir}/data -maxdepth 5"
       echo
 
-      if [[ -n "$snapdb" ]]; then
+      if [[ -n "$sqlite_rel" ]]; then
         echo "  ${C_YEL}2)${C_OFF} 还原数据库（SQLite 一致性快照）"
         echo "     ${C_DIM}# 先停掉应用，避免写入冲突${C_OFF}"
         echo "     bin/hl down ${app}"
-        echo "     ${C_DIM}# 用快照覆盖库文件（快照是完整的，含当时 WAL 里的数据）${C_OFF}"
-        echo "     cp ${snapdb} ${REPO_ROOT}/apps/${app}/data/$(basename "$snapdb")"
+        echo "     ${C_DIM}# 用快照覆盖库文件（快照是完整的，含当时 WAL 里的数据），并删掉旧 wal/shm${C_OFF}"
+        local _db_rel
+        local -a _dbs
+        IFS=',' read -ra _dbs <<< "$sqlite_rel"
+        for _db_rel in "${_dbs[@]}"; do
+          _db_rel="$(echo "$_db_rel" | xargs)"
+          [[ -n "$_db_rel" ]] || continue
+          echo "     cp ${outdir}/data/ops/backup/.snapshots/${app}/$(basename "$_db_rel") ${app_dir}${_db_rel#./}"
+          echo "     rm -f ${app_dir}${_db_rel#./}-wal ${app_dir}${_db_rel#./}-shm"
+        done
         echo
       fi
 
       echo "  ${C_YEL}3)${C_OFF} 数据目录覆盖回去（注意末尾的小点，表示拷贝目录内容）"
-      echo "     cp -a ${outdir}/data/apps/${app}/data/. ${REPO_ROOT}/apps/${app}/data/"
+      echo "     cp -a ${outdir}/data/apps/${app}/data/. ${app_dir}data/"
       echo
       echo "  ${C_YEL}4)${C_OFF} 重新启动"
       echo "     bin/hl up ${app}"
@@ -272,10 +287,38 @@ do_restore() {
       "$REPO_ROOT/bin/hl" down "$app" 2>/dev/null || warn "停止失败，继续"
 
       info "覆盖恢复中"
-      run_restic_rw restore "$snap" --tag "app:${app}" --target /data 2>&1 | sed 's/^/  /'
+      # --target / 而不是 /data：restic 会把快照里的绝对路径去掉根后拼到
+      # target 后面。快照路径是 /data/apps/...，去掉根后是 data/apps/...，
+      # 拼到 / 下正好是 /data/apps/...（容器内 /data = 宿主仓库根）。
+      # 若用 /data 会变成 /data/data/apps/... 多一层。
+      run_restic_rw restore "$snap" --tag "app:${app}" --target / 2>&1 | sed 's/^/  /'
+
+      # ---- 应用 SQLite 一致性快照 ----
+      # 备份时对声明的 SQLite 库做了 .backup 原子快照，完整数据在
+      # ops/backup/.snapshots/<应用>/ 下；而应用 data 目录里的原始
+      # .db 是「旧」的（写入还在 .db-wal 里，而 -wal 被排除了）。
+      # 所以恢复完必须再把快照覆盖回应用目录，否则数据不完整。
+      if [[ -n "$sqlite_rel" ]]; then
+        local -a dbs
+        IFS=',' read -ra dbs <<< "$sqlite_rel"
+        local db_rel
+        for db_rel in "${dbs[@]}"; do
+          db_rel="$(echo "$db_rel" | xargs)"
+          [[ -n "$db_rel" ]] || continue
+          local snapfile="$REPO_ROOT/ops/backup/.snapshots/${app}/$(basename "$db_rel")"
+          local targetdb="${app_dir}${db_rel#./}"
+          if [[ -f "$snapfile" ]]; then
+            cp "$snapfile" "$targetdb"
+            # 删掉旧 wal/shm：快照已含全部数据，留着会让 SQLite 读到旧数据
+            rm -f "${targetdb}-wal" "${targetdb}-shm"
+            ok "  SQLite 快照已还原到 ${db_rel}"
+          else
+            warn "  未找到 SQLite 快照 ${snapfile}，库文件维持原状"
+          fi
+        done
+      fi
 
       ok "恢复完成"
-      warn "数据库需要单独手动导入（见 ops/backup/restored 里的 .sql.gz）"
       echo
       echo "启动应用: bin/hl up ${app}"
       ;;

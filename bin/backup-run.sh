@@ -82,8 +82,10 @@ backup_app() {
       # 用容器跑 sqlite3，宿主不用装。
       # --user 0：keinos/sqlite3 镜像默认用非 root 用户运行，
       # 对挂载的宿主目录没有写权限，必须指定 root。
+      # 源目录不能挂 :ro —— WAL 模式的库打开时要访问 -shm 共享内存文件，
+      # 只读挂载会让 sqlite3 报 "unable to open database file"。
       if docker run --rm --user 0 \
-           -v "$(dirname "$db_abs"):/src:ro" \
+           -v "$(dirname "$db_abs"):/src" \
            -v "$SNAP_DIR/$name:/out" \
            keinos/sqlite3:latest \
            sqlite3 "/src/$(basename "$db_abs")" ".backup /out/$(basename "$db_abs")" 2>/dev/null; then
