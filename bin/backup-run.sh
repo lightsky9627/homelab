@@ -8,10 +8,15 @@
 #    bin/hl backup prune         只清理旧快照，不备份
 #
 #  备份流程（每个应用独立一份快照，打上 tag 便于按应用查询/恢复）：
-#    1) 如果应用用了 PostgreSQL，先 pg_dump 出一个 .sql.gz
-#    2) 把 dump 文件 + 应用的 data/ 目录一起交给 restic
-#    3) 全部完成后按保留策略清理旧快照
-#    4) 检查仓库大小，超阈值告警
+#    1) 如果声明了 sqlite 库，先用 .backup 取一致性快照
+#    2) 把应用的数据目录 + .env 交给 restic（按 exclude 排除垃圾）
+#    3) 单独备份一份全局配置快照（所有 .env + compose）
+#    4) 全部完成后按保留策略清理旧快照
+#    5) 检查仓库大小，超阈值告警
+#
+#  为什么不用 pg_dump：应用都用 SQLite，数据就在 data/ 里，
+#  直接备目录即可。恢复时还原文件就能用，不用建库灌数据。
+#  如果将来真用上了 PG，再加 pg-db 标签支持。
 # ======================================================================
 
 set -euo pipefail
@@ -33,9 +38,9 @@ while (( $# )); do
   shift
 done
 
-# 临时目录：放数据库 dump，备份完就删
-DUMP_DIR="$REPO_ROOT/ops/backup/.dumps"
-cleanup() { rm -rf "$DUMP_DIR"; }
+# 临时目录：放 SQLite 快照，备份完就删
+SNAP_DIR="$REPO_ROOT/ops/backup/.snapshots"
+cleanup() { rm -rf "$SNAP_DIR"; }
 trap cleanup EXIT
 
 START_TS=$(date +%s)
@@ -46,38 +51,48 @@ SUCCEEDED=()
 #  备份单个应用
 # ======================================================================
 backup_app() {
-  local dir="$1" name="$2" pgdb="$3" paths="$4"
+  local dir="$1" name="$2" paths="$3" sqlite="${4:-}" excludes="${5:-}"
 
   info "备份 ${C_YEL}${name}${C_OFF}"
 
   # 这个应用要交给 restic 的所有路径（容器内视角，都在 /data 下）
   local targets=()
 
-  # ---- 1) 数据库 dump ----
-  if [[ -n "$pgdb" ]]; then
-    mkdir -p "$DUMP_DIR"
-    local dumpfile="$DUMP_DIR/${name}-${pgdb}.sql.gz"
-    echo "    导出 PostgreSQL 库: $pgdb"
+  # ---- 1) SQLite 一致性快照 ----
+  # SQLite 写入时数据分散在 .db 和 .db-wal 两个文件里，
+  # 直接 cp 可能拷到「写到一半」的状态，恢复出来是坏库。
+  # .backup 命令是原子的，拿到的一定是完整可用的库。
+  if [[ -n "$sqlite" ]]; then
+    local -a db_arr
+    IFS=',' read -ra db_arr <<< "$sqlite"
+    local db_rel
+    for db_rel in "${db_arr[@]}"; do
+      db_rel="$(echo "$db_rel" | xargs)"
+      [[ -n "$db_rel" ]] || continue
+      local db_abs="${dir}${db_rel#./}"
 
-    # 用 pg_dump 导出。注意这里连的是共享 pg 容器。
-    # -Fc 是自定义格式（支持并行恢复、单表恢复），但为了可读性和通用性
-    # 这里用纯 SQL + gzip，恢复时直接 psql < 就行。
-    local pgdir="$REPO_ROOT/infra/020-postgresql"
-    local pguser; pguser="$(read_env "$pgdir/.env" POSTGRES_USER)"
-
-    if docker exec postgresql pg_dump -U "$pguser" -d "$pgdb" 2>/dev/null | gzip > "$dumpfile"; then
-      # 检查 dump 不是空的（pg_dump 失败时可能产生空文件）
-      if [[ -s "$dumpfile" ]] && [[ $(stat -c%s "$dumpfile") -gt 100 ]]; then
-        echo "    dump 大小: $(human_size "$(stat -c%s "$dumpfile")")"
-        targets+=("/data/ops/backup/.dumps/$(basename "$dumpfile")")
-      else
-        warn "    dump 文件异常（太小），跳过该库"
-        rm -f "$dumpfile"
+      if [[ ! -f "$db_abs" ]]; then
+        warn "    SQLite 库不存在，跳过: $db_rel"
+        continue
       fi
-    else
-      warn "    pg_dump 失败，跳过数据库部分（PostgreSQL 容器在运行吗？）"
-      rm -f "$dumpfile"
-    fi
+
+      mkdir -p "$SNAP_DIR/$name"
+      local snap="$SNAP_DIR/$name/$(basename "$db_abs")"
+
+      # 用容器跑 sqlite3，宿主不用装。
+      # --user 0：keinos/sqlite3 镜像默认用非 root 用户运行，
+      # 对挂载的宿主目录没有写权限，必须指定 root。
+      if docker run --rm --user 0 \
+           -v "$(dirname "$db_abs"):/src:ro" \
+           -v "$SNAP_DIR/$name:/out" \
+           keinos/sqlite3:latest \
+           sqlite3 "/src/$(basename "$db_abs")" ".backup /out/$(basename "$db_abs")" 2>/dev/null; then
+        echo "    SQLite 快照: ${db_rel} ($(human_size "$(stat -c%s "$snap")"))"
+        targets+=("/data/ops/backup/.snapshots/${name}/$(basename "$db_abs")")
+      else
+        warn "    SQLite 快照失败，将直接备份原库文件: $db_rel"
+      fi
+    done
   fi
 
   # ---- 2) 数据目录 ----
@@ -111,14 +126,36 @@ backup_app() {
     return 0
   fi
 
-  # ---- 4) 交给 restic ----
+  # ---- 4) 组装排除规则 ----
+  # 通用的：套接字、pid、SQLite 的 wal/shm 临时文件
+  #（wal/shm 的内容已经包含在上面的快照里了，备了反而干扰恢复）
+  local -a exclude_args=(
+    --exclude '*.sock'
+    --exclude '*.pid'
+    --exclude '*.db-wal'
+    --exclude '*.db-shm'
+  )
+
+  # 应用自己声明的排除规则
+  if [[ -n "$excludes" ]]; then
+    local -a ex_arr
+    IFS=',' read -ra ex_arr <<< "$excludes"
+    local ex
+    for ex in "${ex_arr[@]}"; do
+      ex="$(echo "$ex" | xargs)"
+      [[ -n "$ex" ]] || continue
+      exclude_args+=(--exclude "$ex")
+      echo "    排除: ${ex}"
+    done
+  fi
+
+  # ---- 5) 交给 restic ----
   # --tag 打上应用名，之后可以用 --tag 过滤查询和恢复
   # --host 统一设成 homelab，避免容器主机名变化导致快照分组混乱
   if run_restic backup \
       --tag "app:${name}" \
       --host homelab \
-      --exclude '*.sock' \
-      --exclude '*.pid' \
+      "${exclude_args[@]}" \
       "${targets[@]}" 2>&1 | sed 's/^/    /'; then
     ok "  ${name} 备份完成"
     SUCCEEDED+=("$name")
@@ -148,14 +185,14 @@ if [[ $PRUNE_ONLY -eq 0 ]]; then
 
   entry=""
   for entry in "${app_list[@]}"; do
-    IFS='|' read -r dir name pgdb paths <<< "$entry"
+    IFS='|' read -r dir name paths sqlite excludes <<< "$entry"
     [[ -n "$name" ]] || continue
     # 有过滤条件时只备份匹配的
     if [[ -n "$FILTER" ]]; then
       [[ "$name" == *"$FILTER"* ]] || continue
     fi
     found=1
-    backup_app "$dir" "$name" "$pgdb" "$paths"
+    backup_app "$dir" "$name" "$paths" "$sqlite" "$excludes"
     echo
   done
 
@@ -168,8 +205,44 @@ if [[ $PRUNE_ONLY -eq 0 ]]; then
     labels:
       homelab.backup.enable: \"true\"
       homelab.backup.paths: \"./data\"
-      homelab.backup.pg-db: \"\${DB_NAME}\"   # 用 pg 的应用才需要"
+      homelab.backup.sqlite: \"./data/xxx.db\"      # 有 SQLite 库的应用
+      homelab.backup.exclude: \"cache/,*.log\"      # 不想备的东西"
     fi
+  fi
+
+  # ---- 全局配置快照 ----
+  # 单独备一份所有 .env 和 compose 文件，不依赖应用标签。
+  # 理由：.env 里是密码和密钥，而且被 .gitignore 排除，不在任何
+  # git 仓库里，丢了就真没了。数据救回来了但配置没了，一样跑不起来。
+  if [[ -z "$FILTER" ]]; then
+    info "备份 ${C_YEL}配置文件${C_OFF}"
+
+    conf_targets=()
+    while IFS= read -r f; do
+      [[ -n "$f" ]] && conf_targets+=("/data/${f#$REPO_ROOT/}")
+    done < <(find "$REPO_ROOT" \
+               \( -name '.env' -o -name 'docker-compose.yaml' -o -name 'Caddyfile' \) \
+               -not -path '*/data/*' -not -path '*/.git/*' 2>/dev/null | sort)
+
+    # 脚本和反代站点配置也带上
+    [[ -d "$REPO_ROOT/bin" ]] && conf_targets+=("/data/bin")
+    [[ -d "$REPO_ROOT/infra/010-caddy/sites" ]] && conf_targets+=("/data/infra/010-caddy/sites")
+
+    if [[ ${#conf_targets[@]} -gt 0 ]]; then
+      echo "    文件数: ${#conf_targets[@]}"
+      if run_restic backup \
+          --tag "app:_config" \
+          --host homelab \
+          --exclude '*.sock' --exclude '*.pid' \
+          "${conf_targets[@]}" 2>&1 | sed 's/^/    /'; then
+        ok "  配置文件备份完成"
+        SUCCEEDED+=("_config")
+      else
+        warn "  配置文件备份失败"
+        FAILED+=("_config")
+      fi
+    fi
+    echo
   fi
 fi
 

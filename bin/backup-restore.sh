@@ -232,32 +232,24 @@ do_restore() {
       ok "恢复完成"
       echo
       echo "文件在: ${C_YEL}${outdir}${C_OFF}"
-      # 找出恢复出来的 dump 文件，以及它对应的真实库名。
-      # 注意：库名不等于应用目录名（目录是 100-memos，库是 memos）
-      local dumpfile dbname pguser
-      dumpfile="$(find "$outdir" -name '*.sql.gz' -print -quit 2>/dev/null || true)"
-      pguser="$(read_env "$REPO_ROOT/infra/020-postgresql/.env" POSTGRES_USER 2>/dev/null || echo postgres)"
+
+      # 找恢复出来的 SQLite 一致性快照（备份时用 .backup 生成的完整库）
+      local snapdb
+      snapdb="$(find "$outdir" -path '*/.snapshots/*' -name '*.db' -print -quit 2>/dev/null || true)"
 
       echo
       echo "${C_BLU}接下来手动操作：${C_OFF}"
       echo
       echo "  ${C_YEL}1)${C_OFF} 先看看恢复出来的内容对不对"
-      echo "     find ${outdir}/data -maxdepth 4"
+      echo "     find ${outdir}/data -maxdepth 5"
       echo
 
-      if [[ -n "$dumpfile" ]]; then
-        # 从文件名里反推库名：<应用目录名>-<库名>.sql.gz
-        dbname="$(basename "$dumpfile" .sql.gz)"
-        dbname="${dbname#${app}-}"
-
-        echo "  ${C_YEL}2)${C_OFF} 导回数据库（库名: ${C_YEL}${dbname}${C_OFF}）"
+      if [[ -n "$snapdb" ]]; then
+        echo "  ${C_YEL}2)${C_OFF} 还原数据库（SQLite 一致性快照）"
         echo "     ${C_DIM}# 先停掉应用，避免写入冲突${C_OFF}"
         echo "     bin/hl down ${app}"
-        echo "     ${C_DIM}# 删掉旧库重建（⚠️ 会清空现有数据）${C_OFF}"
-        echo "     docker exec -i postgresql psql -U ${pguser} -c 'DROP DATABASE IF EXISTS ${dbname};'"
-        echo "     docker exec -i postgresql psql -U ${pguser} -c 'CREATE DATABASE ${dbname} OWNER ${dbname};'"
-        echo "     ${C_DIM}# 导入${C_OFF}"
-        echo "     gunzip -c ${dumpfile} | docker exec -i postgresql psql -U ${pguser} -d ${dbname}"
+        echo "     ${C_DIM}# 用快照覆盖库文件（快照是完整的，含当时 WAL 里的数据）${C_OFF}"
+        echo "     cp ${snapdb} ${REPO_ROOT}/apps/${app}/data/$(basename "$snapdb")"
         echo
       fi
 

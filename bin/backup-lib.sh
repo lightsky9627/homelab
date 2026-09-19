@@ -130,17 +130,15 @@ discover_apps() {
 
     local name; name="$(basename "$d")"
     # 从 yaml 里抓标签值（简单 grep，够用且不引入 yq 依赖）
-    local pgdb paths
-    pgdb="$(grep -oE 'homelab\.backup\.pg-db: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+    local paths sqlite excludes
+    # paths：要备份的目录，逗号分隔
     paths="$(grep -oE 'homelab\.backup\.paths: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+    # sqlite：需要做一致性快照的库文件，逗号分隔
+    sqlite="$(grep -oE 'homelab\.backup\.sqlite: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+    # exclude：不备份的内容，glob 模式，逗号分隔
+    excludes="$(grep -oE 'homelab\.backup\.exclude: *"[^"]*"' "$yaml" | head -1 | sed 's/.*"\(.*\)"/\1/')"
 
-    # pg 库名如果写的是 ${DB_NAME} 这种变量，从应用 .env 里解析出真实值
-    if [[ "$pgdb" == '${'* ]]; then
-      local var="${pgdb#\$\{}"; var="${var%\}}"
-      pgdb="$(read_env "${d}.env" "$var" 2>/dev/null || echo "")"
-    fi
-
-    echo "${d}|${name}|${pgdb}|${paths}"
+    echo "${d}|${name}|${paths}|${sqlite}|${excludes}"
   done
   set -e
 }
